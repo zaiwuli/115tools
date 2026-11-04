@@ -612,6 +612,41 @@ class ComponentCheckSettings(BaseModel):
     enabled: bool
 
 
+class ComponentAction(BaseModel):
+    component: str
+
+
+@router.get("/system/components")
+def installed_components(request: Request):
+    from app.services.component_manager import inventory
+    return inventory(request.app.state.config)
+
+
+@router.post("/system/components/install")
+async def install_component(command: ComponentAction, request: Request):
+    from app.services.component_manager import install
+    result = request.app.state.db.settings().get("component_updates", {})
+    candidate = result.get("p115", {}) if command.component == "p115" else result
+    if candidate.get("status") != "checked":
+        raise HTTPException(409, detail="CHECK_UPDATES_FIRST")
+    version = candidate.get("upstream_commit" if command.component == "p115" else "upstream", "")
+    return await asyncio.to_thread(install, request.app.state.config, command.component, version)
+
+
+@router.post("/system/components/rollback")
+async def rollback_component(command: ComponentAction, request: Request):
+    from app.services.component_manager import rollback
+    if command.component not in {"p115", "7zip"}:
+        raise ValueError("UNKNOWN_COMPONENT")
+    return await asyncio.to_thread(rollback, request.app.state.config, command.component)
+
+
+@router.post("/system/components/cleanup")
+async def cleanup_components(request: Request):
+    from app.services.component_manager import cleanup
+    return await asyncio.to_thread(cleanup, request.app.state.config)
+
+
 @router.post("/system/component-updates/settings")
 def component_check_settings(command: ComponentCheckSettings, request: Request):
     request.app.state.db.set_settings({"component_update_checks": command.enabled})

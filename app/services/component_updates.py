@@ -31,7 +31,7 @@ def p115_info():
 
 async def check_p115(previous):
     info = p115_info()
-    result = {**info, "checked_at": time.time(), "installation": "application_release"}
+    result = {**info, "checked_at": time.time(), "installation": "online_restart_required"}
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             response = await client.get(
@@ -44,7 +44,7 @@ async def check_p115(previous):
             raise ValueError("UPSTREAM_VERSION_UNKNOWN")
         result.update(status="checked", upstream_commit=commit,
                       upstream_url=f"https://github.com/ChenyangGao/p115client/commit/{commit}",
-                      update_available=commit != info["locked_commit"],
+                      update_available=commit != (info["running_commit"] or info["locked_commit"]),
                       last_success=result["checked_at"])
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
         result.update(status="failed", error="UPDATE_CHECK_FAILED",
@@ -68,7 +68,7 @@ async def check(db, config):
                   "component_error": current.get("error"),
                   "update_available": (version_key(latest) > version_key(current["version"])
                                        if current["available"] else None),
-                  "installation": "application_release"}
+                  "installation": "online"}
     except (httpx.HTTPError, ValueError):
         result = {"checked_at": time.time(), "status": "failed",
                   "error": "UPDATE_CHECK_FAILED", "last_success": previous.get("last_success")}
@@ -87,4 +87,10 @@ async def monitor(db, config):
         last = settings.get("component_updates", {}).get("checked_at", 0)
         if settings.get("component_update_checks", True) and time.time() - last >= 86400:
             await check(db, config)
+            from app.services.component_manager import cleanup
+            from filelock import Timeout
+            try:
+                await asyncio.to_thread(cleanup, config, True)
+            except (Timeout, OSError):
+                pass
         await asyncio.sleep(60)

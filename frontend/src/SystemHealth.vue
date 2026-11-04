@@ -6,6 +6,17 @@ const system = useSystem()
 const updates = ref<any>(null)
 const busy = ref(false)
 const error = ref('')
+const installed = ref<any>(null)
+async function componentAction(action: string, component?: string) {
+  busy.value = true; error.value = ''
+  try {
+    const result = await api('/api/v1/system/components/' + action, component ? { component } : {})
+    installed.value = await api('/api/v1/system/components')
+    if (action === 'cleanup') error.value = '已清理 ' + result.removed + ' 个过期版本'
+    await system.refresh()
+  } catch { error.value = '操作失败，请检查网络、版本来源和组件验证结果，旧版本仍保留' }
+  finally { busy.value = false }
+}
 const p115UpdateLabel = computed(() => {
   const checked = updates.value?.result?.p115
   if (!checked) return '未检查'
@@ -33,7 +44,7 @@ const sevenUpdateLabel = computed(() => {
   return '最新'
 })
 async function loadUpdates() { updates.value = await api('/api/v1/system/component-updates') }
-onMounted(() => { loadUpdates().catch(() => {}) })
+onMounted(() => { loadUpdates().catch(() => {}); api('/api/v1/system/components').then(value => { installed.value = value }).catch(() => {}) })
 async function checkUpdates() {
   busy.value = true; error.value = ''
   try { await api('/api/v1/system/component-updates/check', {}); await loadUpdates() }
@@ -83,7 +94,13 @@ async function toggleChecks() {
       <p v-else>上游提交：<a :href="updates.result.p115.upstream_url" target="_blank" rel="noopener noreferrer">{{ updates.result.p115.upstream_commit }}</a> · {{ updates.result.p115.update_available ? '上游有变更，待兼容验证' : '锁定版本最新' }}</p>
     </template>
     <p v-else>尚未检查 p115 上游版本</p>
-    <p>更新通过应用版本或镜像发布安装，保留上一版本用于回退。</p>
+    <p>组件安装在配置目录中。7-Zip 对新任务生效；p115 更新后需重启容器生效。保留当前和上一版本，更早版本保留 7 天。</p>
+    <p v-if="installed?.p115_restart_required">p115 版本已切换，请等待活动任务结束后重启容器。</p>
+    <v-btn :disabled="busy || updates?.result?.status !== 'checked'" @click="componentAction('install', '7zip')">更新 7-Zip</v-btn>
+    <v-btn :disabled="busy || updates?.result?.p115?.status !== 'checked'" @click="componentAction('install', 'p115')">更新 p115</v-btn>
+    <v-btn :disabled="busy || !installed?.components?.['7zip']?.current" variant="text" @click="componentAction('rollback', '7zip')">回滚 7-Zip</v-btn>
+    <v-btn :disabled="busy || !installed?.components?.p115?.current" variant="text" @click="componentAction('rollback', 'p115')">回滚 p115</v-btn>
+    <v-btn :disabled="busy" variant="text" @click="componentAction('cleanup')">清理过期版本</v-btn>
     <v-btn :loading="busy" @click="checkUpdates">检查更新</v-btn>
     <v-btn v-if="updates" variant="text" @click="toggleChecks">{{ updates.enabled ? '关闭每日检查' : '开启每日检查' }}</v-btn>
     <p v-if="error">{{ error }}</p>

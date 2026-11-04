@@ -35,6 +35,9 @@ def extractor_available(config=None):
 def component_info(config=None):
     """Read the selected executable's identity without running an extraction."""
     tool = config.extractor_path if config and config.extractor_path else tool_path()
+    if config:
+        from app.services.component_manager import active_path
+        tool = active_path(config, "7zip") or tool
     info = {"name": "7-Zip", "available": False, "version": None,
             "path": tool, "source": "https://www.7-zip.org/",
             "update_policy": "validated_release", "error": "EXTRACTOR_NOT_FOUND"}
@@ -288,7 +291,13 @@ def main():
     parser.add_argument("--max-bytes", type=int, required=True)
     parser.add_argument("--max-files", type=int, required=True)
     args = parser.parse_args()
+    lease = None
     try:
+        configured = tool_path()
+        if configured and Path(configured).name == "7zzs":
+            from filelock import FileLock
+            lease = FileLock(str(Path(configured).parent) + ".lease")
+            lease.acquire()
         limit_worker(1024**3, 1800)
         result = extract(Path(args.source), Path(args.output), args.max_bytes, args.max_files)
         print(json.dumps({"ok": True, "manifest": result}))
@@ -299,6 +308,9 @@ def main():
         )
         print(json.dumps({"ok": False, "error": code[:100]}))
         raise SystemExit(1) from None
+    finally:
+        if lease:
+            lease.release()
 
 
 if __name__ == "__main__":

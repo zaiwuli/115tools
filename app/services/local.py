@@ -365,6 +365,10 @@ class LocalService:
                     env["WORK115_" + key.upper()] = str(task.policy.get(key, default)).lower()
                 if self.config.extractor_path:
                     env["WORK115_EXTRACTOR_PATH"] = self.config.extractor_path
+                from app.services.component_manager import active_path
+                selected = active_path(self.config, "7zip")
+                if selected:
+                    env["WORK115_EXTRACTOR_PATH"] = selected
                 env["WORK115_LOCAL_RESERVE_BYTES"] = str(reserve_bytes)
                 if shutil.disk_usage(output_root).free < reserve_bytes:
                     raise ValueError("INSUFFICIENT_OUTPUT_SPACE")
