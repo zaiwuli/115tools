@@ -69,8 +69,8 @@ def install(config, component, version):
                 architecture = {"x86_64": "x64", "aarch64": "arm64"}.get(platform.machine())
                 if not architecture:
                     raise ValueError("UNSUPPORTED_COMPONENT_PLATFORM")
-                url = f"https://www.7-zip.org/a/7z{version.replace('.', '')}-linux-{architecture}.tar.xz"
-                with httpx.Client(timeout=60, follow_redirects=False) as client:
+                url = f"https://github.com/ip7z/7zip/releases/download/{version}/7z{version.replace('.', '')}-linux-{architecture}.tar.xz"
+                with httpx.Client(timeout=60, follow_redirects=True, max_redirects=5) as client:
                     with client.stream("GET", url) as response:
                         response.raise_for_status()
                         package = destination / "package.tar.xz"
@@ -126,6 +126,9 @@ def install(config, component, version):
             record["current"] = item
             save(config, data)
             return inventory(config)
+        except (httpx.HTTPError, subprocess.SubprocessError, OSError, tarfile.TarError) as exc:
+            shutil.rmtree(destination)
+            raise ValueError("COMPONENT_DOWNLOAD_OR_INSTALL_FAILED") from exc
         except BaseException:
             shutil.rmtree(destination)
             raise
