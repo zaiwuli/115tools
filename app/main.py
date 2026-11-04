@@ -116,7 +116,7 @@ def create_app(config: Config | None = None, adapter=None) -> FastAPI:
         finally:
             lock.release()
 
-    app = FastAPI(title="115work", version=config.version, lifespan=lifespan,
+    app = FastAPI(title="115tools", version=config.version, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(RequestLimitMiddleware)
 

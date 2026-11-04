@@ -171,7 +171,7 @@ watch(() => system.refreshVersion, () => void load())
 
 <template>
   <section v-mobile-tables class="workspace">
-    <header class="page-heading"><div><div class="eyebrow">115work</div><h1>{{ view === 'connections' ? '系统设置' : titles[view] }}</h1></div>
+    <header class="page-heading"><div><div class="eyebrow">115tools</div><h1>{{ view === 'connections' ? '系统设置' : titles[view] }}</h1></div>
       <div class="heading-actions"><v-btn v-if="canWrite && ['connections','rules','schedules'].includes(view)" color="primary" @click="open()"><Plus :size="17" class="mr-2" />添加</v-btn>
         </div>
     </header>

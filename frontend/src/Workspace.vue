@@ -355,7 +355,7 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
 <template>
   <section v-mobile-tables class="workspace">
     <header class="page-heading">
-      <div><div class="eyebrow">115work</div><h1>{{ titles[view] || '运行总览' }}</h1></div>
+      <div><div class="eyebrow">115tools</div><h1>{{ titles[view] || '运行总览' }}</h1></div>
       <div class="heading-actions">
         <v-btn v-if="view === 'sources' && canWrite" color="primary" @click="openSource()"><Plus :size="17" class="mr-2" />添加来源</v-btn>
         <v-btn v-if="canWrite && offlineMode" variant="outlined" :disabled="loading" @click="action('/api/115/offline/refresh')"><RefreshCw :size="16" class="mr-2" />查询离线</v-btn>
@@ -397,7 +397,7 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
               <template v-if="canWrite">
               <button v-if="task.state === 'FAILED'" title="重试" aria-label="重试任务" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'retry' })"><RotateCcw :size="17" /></button>
               <button v-if="task.stage === 'cloud_password'" title="重试密码" aria-label="重试密码" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'approve' })"><CheckCircle2 :size="17" /></button>
-              <button v-if="task.can_download_local || task.can_fallback" title="下载到本地解压" aria-label="下载到本地解压" @click="confirmation = { title: '确认下载原包到运行115work的设备并本地解压？将占用本地存储和下载流量。成功后按原规则处理云端原包；原云操作未结束时暂缓处理。', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'download_local', expected_version: task.version } }"><Download :size="17" /></button>
+              <button v-if="task.can_download_local || task.can_fallback" title="下载到本地解压" aria-label="下载到本地解压" @click="confirmation = { title: '确认下载原包到运行115tools的设备并本地解压？将占用本地存储和下载流量。成功后按原规则处理云端原包；原云操作未结束时暂缓处理。', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'download_local', expected_version: task.version } }"><Download :size="17" /></button>
               <button v-if="task.output.postprocess_result === 'FAILED'" :title="task.output.cleanup_result === 'FAILED' ? '重试清理' : '重试后处理'" aria-label="重试后处理" @click="action('/api/v1/tasks/' + task.id + '/postprocess/retry')"><RotateCcw :size="17" /></button>
               <button v-if="!['SUCCEEDED', 'FAILED', 'CANCELED', 'SKIPPED'].includes(task.state)" title="请求取消" aria-label="请求取消任务" @click="confirmation = { title: '请求取消此任务？', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'cancel' } }"><X :size="17" /></button>
               <button v-if="['SUCCEEDED', 'FAILED', 'CANCELED', 'SKIPPED'].includes(task.state)" title="删除任务" aria-label="删除任务记录" @click="confirmation = { title: '彻底删除此任务及去重记录？原包和解压结果保留，下次发现可能重新解压。', endpoint: '/api/v1/tasks/' + task.id, method: 'DELETE' }"><Trash2 :size="17" /></button>
