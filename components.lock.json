@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "extract": {
+    "name": "7-Zip",
+    "version": "26.01",
+    "source": "https://www.7-zip.org/",
+    "checksum_provenance": "project-observed download SHA-256; not upstream signature verification",
+    "linux_amd64": {
+      "url": "https://www.7-zip.org/a/7z2601-linux-x64.tar.xz",
+      "sha256": "8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a"
+    },
+    "linux_arm64": {
+      "url": "https://www.7-zip.org/a/7z2601-linux-arm64.tar.xz",
+      "sha256": "39f8c9070c300a63c7484d9a983119ef3edf841e1ddf69f1affae29fdec5f612"
+    },
+    "compatibility": "Windows 26.01 regression including small RAR/RAR5 solid and multivolume fixtures passed; Linux runtime pending"
+  },
+  "p115client": {
+    "source": "https://github.com/ChenyangGao/p115client",
+    "commit": "856e4f8f09ce034534bd458f06d3dee4474a1698",
+    "update_policy": "validated application release"
+  }
+}

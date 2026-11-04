@@ -1,0 +1,18 @@
+services:
+  115tools:
+    build: .
+    image: 115tools:latest
+    container_name: 115tools
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      WORK115_DATA_DIR: /config
+      WORK115_LOCAL_ROOT: /data
+    volumes:
+      - /volume4/存储空间4/解压文件夹:/data
+      - /volume1/docker/115tools:/config
+    ports:
+      - "5656:5656"
+    init: true
+    stop_grace_period: 90s
+networks: {}
