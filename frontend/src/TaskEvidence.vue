@@ -7,6 +7,7 @@ const props = defineProps<{ task: any }>()
 const emit = defineEmits<{ updated: [] }>()
 const system = useSystem()
 const deleteConfirmation = ref(false)
+const localConfirmation = ref(false)
 const remoteId = ref('')
 const error = ref('')
 const busy = ref(false)
@@ -36,6 +37,14 @@ async function command(suffix: string, extra: any = {}) {
 </script>
 
 <template>
+  <section v-if="task.can_repeat_local || task.local_executions?.length || task.policy?.manual_local_parent" class="task-evidence">
+    <h3>手动本地处理</h3>
+    <p v-if="task.policy?.manual_local_parent">这是云端任务的独立本地处理，原云端结果保持不变。</p>
+    <v-btn v-if="task.can_repeat_local && system.status?.role !== 'readonly'" :disabled="busy || task.local_executions?.some((item: any) => !['SUCCEEDED','FAILED','CANCELED','SKIPPED'].includes(item.state))" variant="outlined" @click="localConfirmation = true"><Download :size="16" class="mr-2" />下载原包到本地解压</v-btn>
+    <div v-for="item in task.local_executions" :key="item.id" class="event-line"><span>{{ date(item.created_at) }} · {{ stateLabel(item.state) }} · {{ stageLabel(item.stage) }}</span><small>{{ item.error ? textLabel(item.error) : item.id }}</small></div>
+    <p v-if="error" class="error-text">{{ error }}</p>
+  </section>
+  <v-dialog v-model="localConfirmation" max-width="560"><v-card><v-card-title>下载原包到本地解压？</v-card-title><v-card-text>文件：{{ task.name }}（{{ bytes(task.size) }}）。将下载到运行 115tools 的设备并使用独立目录解压，占用本地存储和流量。原包需仍可下载；已归档的原包按当前文件定位读取。保留云端成功记录及原包，不重复执行云端归档或删除。实际输出路径可在新任务详情查看。</v-card-text><v-card-actions><v-spacer /><v-btn @click="localConfirmation = false">取消</v-btn><v-btn color="primary" :disabled="busy" @click="localConfirmation = false; command('/commands', { action: 'repeat_local' })">确认下载</v-btn></v-card-actions></v-card></v-dialog>
   <section v-if="task.output.flatten_result" class="task-evidence">
     <h3>同名文件夹提层</h3>
     <p :class="task.output.flatten_result === 'FAILED' ? 'error-text' : 'success-text'">{{ task.output.flatten_result === 'FAILED' ? '解压成功，提层失败' : '目录整理完成' }}</p>

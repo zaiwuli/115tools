@@ -189,6 +189,13 @@ def task_detail(request: Request, task_id: str, summary: bool = False,
         from app.services.fallback import can_fallback, can_download_local
         result["can_fallback"] = can_fallback(task)
         result["can_download_local"] = can_download_local(task)
+        from app.services.fallback import can_repeat_local
+        result["can_repeat_local"] = can_repeat_local(task)
+        result["local_executions"] = [{"id": child.id, "state": child.state, "stage": child.stage,
+                                       "created_at": child.created_at, "error": child.error}
+                                      for child in session.scalars(select(Task).where(
+                                          Task.policy["manual_local_parent"].as_string() == task.id)
+                                          .order_by(Task.created_at.desc()).limit(20))]
         removed = set(task.output.get("cleanup_deleted", []))
         result["output"] = dict(result["output"]) | {"cleanup_deleted_count": len(removed)}
         if summary or not files:
@@ -293,6 +300,11 @@ def task_command(request, task_id, action, expected_version=None):
                 for job in jobs:
                     if job.state in {"READY", "RECONCILING"}:
                         job.state, job.dirty = "SUCCEEDED", False
+        elif action == "repeat_local":
+            from app.services.fallback import repeat_local
+            child = repeat_local(session, task)
+            request.app.state.engine.wake.set()
+            return {"success": True, "task_id": child.id}
         elif action == "download_local":
             from app.services.fallback import can_download_local
             if not can_download_local(task):

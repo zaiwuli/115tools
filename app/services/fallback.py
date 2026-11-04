@@ -1,6 +1,7 @@
 from sqlalchemy import select
+import uuid
 
-from app.persistence.models import Settings, Identity, Transfer, Operation
+from app.persistence.models import Settings, Identity, Transfer, Operation, Task
 from app.scheduler.store import enqueue
 from app.services.events import record, transition
 
@@ -13,6 +14,38 @@ def can_download_local(task):
         and (task.stage.startswith("cloud_") or task.stage == "local_fallback")
         and task.output.get("failure_archive_result") not in {"PENDING", "FAILED"}
     )
+
+
+def can_repeat_local(task):
+    return bool(task.source == "115" and task.state == "SUCCEEDED"
+                and task.locator.get("pickcode") and not task.output.get("path")
+                and not task.policy.get("manual_local_parent"))
+
+
+def repeat_local(session, task):
+    if not can_repeat_local(task):
+        raise ValueError("LOCAL_REPEAT_UNAVAILABLE")
+    existing = session.scalar(select(Task).where(
+        Task.policy["manual_local_parent"].as_string() == task.id,
+        Task.state.not_in(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"]),
+    ))
+    if existing:
+        raise ValueError("LOCAL_REPEAT_ALREADY_RUNNING")
+    child = Task(object_key=task.object_key + ":manual-local", content_key=task.content_key +
+                 ":manual-local:" + uuid.uuid4().hex,
+                 source="115", name=task.name, size=task.size, stage="cache",
+                 locator=dict(task.locator), policy=task.policy | {
+                     "manual_local_parent": task.id, "fallback_approved": True,
+                     "original_action": "retain", "delete_approved": False,
+                     "cloud_remote_unsettled": False,
+                 })
+    child.output = {"local_final_name": task.name.rsplit(".", 1)[0][:70] + "-local-" + uuid.uuid4().hex[:10]}
+    session.add(child)
+    session.flush()
+    enqueue(session, "local:" + child.id, "local_extract", {"task_id": child.id})
+    record(session, task.id, "MANUAL_LOCAL_CREATED", "complete", "已创建独立本地处理：" + child.id)
+    record(session, child.id, "MANUAL_LOCAL_CREATED", "cache", "来源云端成功任务：" + task.id)
+    return child
 
 
 def expire_cloud(session, task):
