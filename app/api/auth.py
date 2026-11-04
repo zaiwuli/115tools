@@ -24,7 +24,11 @@ def configured(request: Request) -> bool:
 
 
 def authenticate(request: Request):
-    if request.app.state.config.local_no_auth:
+    import_endpoint = request.url.path in {"/api/v1/offline/import", "/api/115/offline/import"} or request.url.path.startswith("/api/v1/import/batches/")
+    require_import_key = False
+    if import_endpoint:
+        require_import_key = request.app.state.db.settings().get("require_import_token", False)
+    if request.app.state.config.local_no_auth and not require_import_key:
         origin = request.headers.get("origin")
         if (origin and origin != str(request.base_url).rstrip("/")) or request.headers.get(
             "sec-fetch-site"

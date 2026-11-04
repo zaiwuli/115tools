@@ -57,6 +57,8 @@ const expression = ref('0 1 * * *')
 const timezone = ref('Asia/Shanghai')
 const role = ref('readonly')
 const tokenName = ref('')
+const tokenNote = ref('')
+const connectionTokens = ref<any[]>([])
 const ttl = ref(30)
 const createdToken = ref('')
 const newPassword = ref('')
@@ -75,6 +77,7 @@ async function load() {
   try {
     const path = view.value === 'security' ? 'security/tokens' : view.value
     items.value = (await api('/api/v1/' + path)).items
+    if (view.value === 'connections') connectionTokens.value = (await api('/api/v1/security/tokens')).items
     sources.value = (await api('/api/v1/sources')).items
   } catch (e) { error.value = (e as Error).message }
   finally { busy.value = false }
@@ -93,6 +96,10 @@ async function command(path: string, body: unknown = {}, method?: string) {
 function open(item?: any) {
   editing.value = item || null
   credential.value = ''
+  kind.value = item?.kind || '115'
+  tokenNote.value = ''
+  role.value = 'import'
+  createdToken.value = ''
   name.value = item?.name || (view.value === 'connections' ? '115' : '')
   sourceId.value = item?.source_id || ''
   pattern.value = item?.config.pattern || '*'
@@ -119,7 +126,10 @@ function open(item?: any) {
 }
 async function save() {
   let result
-  if (view.value === 'connections') {
+  if (view.value === 'connections' && kind.value === 'token') {
+    result = await command('/api/v1/security/tokens', { name: name.value, note: tokenNote.value, role: role.value, ttl_days: ttl.value })
+    if (result) createdToken.value = result.token
+  } else if (view.value === 'connections') {
     result = await command('/api/v1/connections', { name: name.value, kind: kind.value,
       config: { root_cid: directory.value },
       credential: credential.value })
@@ -191,12 +201,15 @@ watch(() => system.refreshVersion, () => void load())
           <td><div class="row-actions"><button aria-label="诊断连接" title="诊断连接" @click="command('/api/v1/connections/' + item.id + '/diagnose').then(x => diagnosis = x)"><Shield :size="18" /></button>
             <button v-if="item.kind === '115'" aria-label="启用115连接" title="启用115连接" @click="command('/api/v1/connections/' + item.id + '/activate')"><Play :size="18" /></button>
             <button aria-label="浏览目录" title="浏览目录" @click="browse(item)"><Search :size="18" /></button>
-            <button aria-label="更新凭据" title="更新凭据" @click="editing = item; credential = ''; opened = true"><KeyRound :size="18" /></button>
+            <button aria-label="更新凭据" title="更新凭据" @click="open(item)"><KeyRound :size="18" /></button>
             <button v-if="canWrite" :disabled="busy" aria-label="删除115账户" title="删除115账户" @click="deletingConnection = item"><Trash2 :size="18" /></button></div></td></tr>
       </tbody></table><div v-if="!items.length" class="empty"><Link :size="32" /><span>暂无连接</span></div></div>
       <p v-if="diagnosis" class="mono mt-5">{{ stateLabel(diagnosis.status) }}</p>
       <section v-if="browser.length" class="settings-section"><h2>目录列表</h2><div v-for="file in browser" :key="file.id || file.fid" class="event-line"><span>{{ file.name }}</span><small>{{ file.path || file.cid }} · {{ file.size }}</small></div></section>
-      <section v-if="canWrite" class="settings-section"><h2>115 Cookie 登录</h2><v-btn variant="outlined" :disabled="busy" @click="open(items.find(x => x.kind === '115'))"><KeyRound :size="17" class="mr-2" />{{ items.some(x => x.kind === '115') ? '更新 Cookie' : '输入 Cookie' }}</v-btn>
+      <section class="settings-section"><h2>API 令牌</h2>
+        <p>链接导入令牌用于苹果快捷指令。创建后，导入接口需要携带有效令牌；后台登录会话仍可正常提交。</p>
+        <v-textarea v-if="createdToken" :model-value="createdToken" label="新令牌（仅显示一次，请立即复制保存）" readonly rows="2" />
+        <div v-for="item in connectionTokens" :key="item.id" class="event-line"><div class="flex-content"><strong>{{ item.name }}</strong><small>{{ item.note || '无备注' }} · {{ item.role === 'import' ? '链接导入' : '只读' }} · 到期 {{ date(item.expires) }}</small></div><button v-if="canWrite" :disabled="busy" class="file-link" aria-label="删除API令牌" title="删除API令牌" @click="command('/api/v1/security/tokens/' + item.id, undefined, 'DELETE')"><Trash2 :size="17" /></button></div>
       </section>
     </template>
 
@@ -217,10 +230,7 @@ watch(() => system.refreshVersion, () => void load())
     </template>
 
     <template v-else-if="view === 'security'">
-      <section class="settings-section"><h2>访问令牌</h2><div class="form-grid"><v-text-field v-model="tokenName" label="令牌名称" /><v-select v-model="role" :items="[{ title: '只读观察者', value: 'readonly' }, { title: '链接导入', value: 'import' }]" label="权限" /><v-text-field v-model.number="ttl" type="number" min="1" max="365" label="有效天数" /><v-btn color="primary" @click="command('/api/v1/security/tokens', { role, name: tokenName, ttl_days: ttl }).then(x => createdToken = x?.token || '')"><Plus :size="17" class="mr-2" />生成令牌</v-btn></div>
-        <v-text-field v-if="createdToken" :model-value="createdToken" label="新令牌" readonly class="mt-5" />
-        <div v-for="item in items" :key="item.id" class="event-line"><div class="flex-content"><strong>{{ item.name }}</strong><small>{{ item.role }} · {{ date(item.expires) }}</small></div><button class="file-link" aria-label="撤销令牌" title="撤销令牌" @click="command('/api/v1/security/tokens/' + item.id, undefined, 'DELETE')"><Trash2 :size="17" /></button></div>
-      </section>
+      <section class="settings-section"><h2>API 令牌</h2><p>令牌已统一移至连接管理。</p><RouterLink to="/connections">前往连接管理</RouterLink></section>
       <section class="settings-section"><h2>管理员密码</h2><div class="form-grid"><v-text-field v-model="newPassword" type="password" label="新密码" autocomplete="new-password" /><v-btn variant="outlined" :disabled="newPassword.length < 12" @click="command('/api/v1/security/password', { password: newPassword }).then(x => x && reload())"><Save :size="17" class="mr-2" />更新密码</v-btn></div></section>
     </template>
 
@@ -234,7 +244,16 @@ watch(() => system.refreshVersion, () => void load())
 
     <v-dialog v-model="opened" :max-width="view === 'rules' ? 800 : 600"><SeedRuleDesigner v-if="view === 'rules' && sourceId === '115-torrent'" :rule="editing" :initial-name="name" @source-change="sourceId = ''" @saved="load" @close="opened = false" /><v-card v-else><header class="dialog-heading"><h2>{{ editing ? '编辑' : '添加' }}{{ titles[view] }}</h2><v-btn icon variant="text" aria-label="关闭" @click="opened = false"><X :size="20" /></v-btn></header>
       <v-card-text><v-form class="dialog-form" @submit.prevent="editing && view === 'connections' ? saveCredentials() : save()">
-        <template v-if="view === 'connections'"><v-text-field v-if="!editing" v-model="name" label="连接名称" /><v-select v-if="!editing" v-model="kind" :items="[{ title: '115 Cookie', value: '115' }]" label="类型" /><v-text-field v-if="!editing && kind === '115'" v-model="directory" label="根 CID" /><v-text-field v-model="credential" type="password" label="115 Cookie" autocomplete="off" /></template>
+        <template v-if="view === 'connections'">
+          <v-select v-if="!editing" v-model="kind" :items="[{ title: '115 Cookie', value: '115' }, { title: 'API 令牌', value: 'token' }]" label="类型" />
+          <v-text-field v-if="!editing" v-model="name" :label="kind === 'token' ? '令牌名称' : '连接名称'" />
+          <template v-if="kind === 'token'">
+            <v-textarea v-model="tokenNote" label="备注" maxlength="500" rows="2" />
+            <v-select v-model="role" :items="[{ title: '链接导入（快捷指令）', value: 'import' }, { title: '只读观察者', value: 'readonly' }]" label="权限" />
+            <v-text-field v-model.number="ttl" type="number" min="1" max="365" label="有效天数" />
+          </template>
+          <template v-else><v-text-field v-if="!editing" v-model="directory" label="根 CID" /><v-text-field v-model="credential" type="password" label="115 Cookie" autocomplete="off" /></template>
+        </template>
         <template v-else><v-text-field v-model="name" label="名称" /><v-select v-model="sourceId" :items="[{ title: '所有来源', value: '' }, ...(view === 'rules' ? [{ title: '115离线下载', value: '115-offline' }, { title: '种子下载', value: '115-torrent' }] : []), ...sources.map(x => ({ title: x.name, value: x.id }))]" label="来源" aria-label="来源" />
           <template v-if="view === 'rules'">
             <h3>01 · 匹配与执行</h3>
@@ -255,7 +274,7 @@ watch(() => system.refreshVersion, () => void load())
           </template>
           <template v-else><v-select v-model="trigger" :items="[{ title: '固定间隔', value: 'interval' }, { title: 'Cron', value: 'cron' }]" label="触发" /><v-text-field v-if="trigger === 'interval'" v-model.number="interval" type="number" min="15" label="间隔 / 秒" /><v-text-field v-else v-model="expression" label="Cron 表达式" /><v-text-field v-model="timezone" label="时区" /></template>
         </template>
-        <v-btn type="submit" color="primary" :disabled="busy || (view === 'connections' && !credential.trim())"><Save :size="17" class="mr-2" />保存</v-btn>
+        <v-btn type="submit" color="primary" :disabled="busy || (view === 'connections' && (kind === 'token' ? !name.trim() : !credential.trim()))"><Save :size="17" class="mr-2" />{{ view === 'connections' && kind === 'token' ? '创建令牌' : '保存' }}</v-btn>
       </v-form></v-card-text></v-card></v-dialog>
   </section>
   <v-dialog :model-value="!!deletingRule" max-width="480" @update:model-value="!$event && (deletingRule = null)"><v-card><v-card-title>删除规则“{{ deletingRule?.name }}”？</v-card-title><v-card-actions><v-spacer /><v-btn variant="text" @click="deletingRule = null">返回</v-btn><v-btn color="error" @click="command('/api/v1/rules/' + deletingRule.id, undefined, 'DELETE').then(x => x && (deletingRule = null))">删除</v-btn></v-card-actions></v-card></v-dialog>

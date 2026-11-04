@@ -420,8 +420,11 @@ async def create_token(request: Request):
         raise ValueError("INVALID_TOKEN_EXPIRY")
     with request.app.state.db.session() as session:
         session.add(Settings(key=key, value={"role": body["role"], "name": str(body.get("name", body["role"]))[:100],
+                                           "note": str(body.get("note", ""))[:500],
                                            "expires": time.time() + ttl * 86400}))
         audit(request, session, "TOKEN_CREATE", key, {"role": body["role"]})
+    if body["role"] == "import":
+        request.app.state.db.set_settings({"require_import_token": True})
     return {"token": value, "id": key, "role": body["role"], "shown_once": True}
 
 
