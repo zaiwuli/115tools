@@ -22,7 +22,7 @@ const sevenUpdateLabel = computed(() => {
   if (!checked) return '未检查'
   if (checked.status !== 'checked') return '检查失败'
   const current = system.status?.extract_component?.version
-  if (!current) return '未安装'
+  if (!current) return '组件不可用，无法判断更新'
   const parts = (value: string) => value.split('.').map(Number)
   const installed = parts(current), upstream = parts(checked.upstream)
   for (let index = 0; index < Math.max(installed.length, upstream.length); index++) {
@@ -62,6 +62,7 @@ async function toggleChecks() {
       <div><dt>7-Zip 版本</dt><dd>{{ system.status?.extract_component?.version || '未检测到' }}</dd></div>
       <div><dt>7-Zip 更新状态</dt><dd>{{ sevenUpdateLabel }}</dd></div>
       <div><dt>7-Zip 路径</dt><dd class="path-cell">{{ system.status?.extract_component?.path || '未配置' }}</dd></div>
+      <div v-if="system.status?.extract_component?.error"><dt>7-Zip 检测</dt><dd>{{ system.status.extract_component.error === 'EXTRACTOR_VERSION_UNRECOGNIZED' ? '无法识别版本' : system.status.extract_component.error === 'EXTRACTOR_NOT_FOUND' ? '程序不存在' : '程序执行失败或超时' }}（{{ system.status.extract_component.error }}）</dd></div>
       <div><dt>解压组件更新</dt><dd>验证后随版本发布更新</dd></div>
       <div><dt>应用版本</dt><dd>{{ system.status?.version || '-' }}</dd></div>
       <div><dt>构建编号</dt><dd class="path-cell">{{ system.status?.build_revision || '-' }}</dd></div>

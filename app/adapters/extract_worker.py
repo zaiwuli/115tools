@@ -29,9 +29,7 @@ def tool_path() -> str:
 
 
 def extractor_available(config=None):
-    if config and config.extractor_path:
-        return Path(config.extractor_path).is_file()
-    return bool(tool_path())
+    return component_info(config)["available"]
 
 
 def component_info(config=None):
@@ -39,18 +37,23 @@ def component_info(config=None):
     tool = config.extractor_path if config and config.extractor_path else tool_path()
     info = {"name": "7-Zip", "available": False, "version": None,
             "path": tool, "source": "https://www.7-zip.org/",
-            "update_policy": "validated_release"}
+            "update_policy": "validated_release", "error": "EXTRACTOR_NOT_FOUND"}
     if not tool:
         return info
     try:
         result = subprocess.run([tool, "i"], capture_output=True, timeout=5,
                                 encoding="utf-8", errors="replace")
         import re
-        match = re.search(r"7-Zip\s+(\d+\.\d+)", result.stdout)
+        match = re.search(r"7-Zip\s+(?:\([^\r\n)]*\)\s+)?(\d+\.\d+)", result.stdout)
         if result.returncode == 0 and match:
-            info.update(available=True, version=match[1])
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+            info.update(available=True, version=match[1], error=None)
+        else:
+            info.update(error="EXTRACTOR_EXECUTION_FAILED" if result.returncode else
+                        "EXTRACTOR_VERSION_UNRECOGNIZED", exit_code=result.returncode)
+    except subprocess.TimeoutExpired:
+        info["error"] = "EXTRACTOR_PROBE_TIMEOUT"
+    except OSError as exc:
+        info.update(error="EXTRACTOR_EXECUTION_FAILED", os_error=exc.errno)
     return info
 
 

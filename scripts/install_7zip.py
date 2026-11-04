@@ -23,7 +23,8 @@ def install(architecture):
         raise ValueError("7ZIP_CHECKSUM_MISMATCH")
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:xz") as archive:
         for member, destination in (
-            ("7zz", Path("/usr/local/bin/7zz")),
+            # Official static build avoids runtime libstdc++/loader dependencies.
+            ("7zzs", Path("/usr/local/bin/7zz")),
             ("License.txt", Path("/usr/local/share/licenses/7zip/License.txt")),
         ):
             entry = archive.getmember(member)

@@ -65,8 +65,9 @@ async def check(db, config):
         current = await asyncio.to_thread(component_info, config)
         result = {"checked_at": time.time(), "status": "checked", "upstream": latest,
                   "current": current["version"], "compatible": "26.01",
-                  "update_available": bool(current["version"] and
-                                           version_key(latest) > version_key(current["version"])),
+                  "component_error": current.get("error"),
+                  "update_available": (version_key(latest) > version_key(current["version"])
+                                       if current["available"] else None),
                   "installation": "application_release"}
     except (httpx.HTTPError, ValueError):
         result = {"checked_at": time.time(), "status": "failed",
