@@ -59,7 +59,7 @@ const role = ref('readonly')
 const tokenName = ref('')
 const tokenNote = ref('')
 const connectionTokens = ref<any[]>([])
-const ttl = ref(30)
+const ttl = ref<number | null>(null)
 const createdToken = ref('')
 const newPassword = ref('')
 const previewName = ref('')
@@ -98,7 +98,7 @@ function open(item?: any) {
   credential.value = ''
   kind.value = item?.kind || '115'
   tokenNote.value = ''
-  role.value = 'import'
+  role.value = 'admin'
   createdToken.value = ''
   name.value = item?.name || (view.value === 'connections' ? '115' : '')
   sourceId.value = item?.source_id || ''
@@ -203,14 +203,15 @@ watch(() => system.refreshVersion, () => void load())
             <button aria-label="浏览目录" title="浏览目录" @click="browse(item)"><Search :size="18" /></button>
             <button aria-label="更新凭据" title="更新凭据" @click="open(item)"><KeyRound :size="18" /></button>
             <button v-if="canWrite" :disabled="busy" aria-label="删除115账户" title="删除115账户" @click="deletingConnection = item"><Trash2 :size="18" /></button></div></td></tr>
-      </tbody></table><div v-if="!items.length" class="empty"><Link :size="32" /><span>暂无连接</span></div></div>
+        <tr v-for="item in connectionTokens" :key="item.id">
+          <td><strong>{{ item.name }}</strong><small>{{ item.note || '无备注' }}</small></td>
+          <td>API 令牌</td><td>{{ item.expires && item.expires < Date.now() / 1000 ? '已过期' : '有效' }}</td>
+          <td>{{ item.role === 'admin' ? '操作' : item.role === 'readonly' ? '只读' : '操作（仅导入）' }}<small>{{ item.expires ? '到期 ' + date(item.expires) : '长期' }}</small></td>
+          <td><div class="row-actions"><button v-if="canWrite" :disabled="busy" aria-label="删除API令牌" title="删除API令牌" @click="command('/api/v1/security/tokens/' + item.id, undefined, 'DELETE')"><Trash2 :size="18" /></button></div></td>
+        </tr>
+      </tbody></table><div v-if="!items.length && !connectionTokens.length" class="empty"><Link :size="32" /><span>暂无连接</span></div></div>
       <p v-if="diagnosis" class="mono mt-5">{{ stateLabel(diagnosis.status) }}</p>
       <section v-if="browser.length" class="settings-section"><h2>目录列表</h2><div v-for="file in browser" :key="file.id || file.fid" class="event-line"><span>{{ file.name }}</span><small>{{ file.path || file.cid }} · {{ file.size }}</small></div></section>
-      <section class="settings-section"><h2>API 令牌</h2>
-        <p>链接导入令牌用于苹果快捷指令。创建后，导入接口需要携带有效令牌；后台登录会话仍可正常提交。</p>
-        <v-textarea v-if="createdToken" :model-value="createdToken" label="新令牌（仅显示一次，请立即复制保存）" readonly rows="2" />
-        <div v-for="item in connectionTokens" :key="item.id" class="event-line"><div class="flex-content"><strong>{{ item.name }}</strong><small>{{ item.note || '无备注' }} · {{ item.role === 'import' ? '链接导入' : '只读' }} · 到期 {{ date(item.expires) }}</small></div><button v-if="canWrite" :disabled="busy" class="file-link" aria-label="删除API令牌" title="删除API令牌" @click="command('/api/v1/security/tokens/' + item.id, undefined, 'DELETE')"><Trash2 :size="17" /></button></div>
-      </section>
     </template>
 
     <template v-else-if="view === 'rules'">
@@ -249,8 +250,8 @@ watch(() => system.refreshVersion, () => void load())
           <v-text-field v-if="!editing" v-model="name" :label="kind === 'token' ? '令牌名称' : '连接名称'" />
           <template v-if="kind === 'token'">
             <v-textarea v-model="tokenNote" label="备注" maxlength="500" rows="2" />
-            <v-select v-model="role" :items="[{ title: '链接导入（快捷指令）', value: 'import' }, { title: '只读观察者', value: 'readonly' }]" label="权限" />
-            <v-text-field v-model.number="ttl" type="number" min="1" max="365" label="有效天数" />
+            <v-select v-model="role" :items="[{ title: '操作', value: 'admin' }, { title: '只读', value: 'readonly' }]" label="权限" />
+            <v-select v-model="ttl" :items="[{ title: '长期', value: null }, { title: '30 天', value: 30 }, { title: '90 天', value: 90 }, { title: '365 天', value: 365 }]" label="有效期" />
           </template>
           <template v-else><v-text-field v-if="!editing" v-model="directory" label="根 CID" /><v-text-field v-model="credential" type="password" label="115 Cookie" autocomplete="off" /></template>
         </template>
@@ -277,6 +278,7 @@ watch(() => system.refreshVersion, () => void load())
         <v-btn type="submit" color="primary" :disabled="busy || (view === 'connections' && (kind === 'token' ? !name.trim() : !credential.trim()))"><Save :size="17" class="mr-2" />{{ view === 'connections' && kind === 'token' ? '创建令牌' : '保存' }}</v-btn>
       </v-form></v-card-text></v-card></v-dialog>
   </section>
+  <v-dialog :model-value="!!createdToken" max-width="600" persistent><v-card><v-card-title>API 令牌已创建</v-card-title><v-card-text><p>令牌仅显示一次，请复制保存。</p><v-textarea :model-value="createdToken" label="API 令牌" readonly rows="3" /></v-card-text><v-card-actions><v-spacer /><v-btn color="primary" @click="createdToken = ''">已保存</v-btn></v-card-actions></v-card></v-dialog>
   <v-dialog :model-value="!!deletingRule" max-width="480" @update:model-value="!$event && (deletingRule = null)"><v-card><v-card-title>删除规则“{{ deletingRule?.name }}”？</v-card-title><v-card-actions><v-spacer /><v-btn variant="text" @click="deletingRule = null">返回</v-btn><v-btn color="error" @click="command('/api/v1/rules/' + deletingRule.id, undefined, 'DELETE').then(x => x && (deletingRule = null))">删除</v-btn></v-card-actions></v-card></v-dialog>
   <v-dialog :model-value="!!deletingConnection" max-width="480" @update:model-value="!$event && (deletingConnection = null)"><v-card><v-card-title>删除115账户？</v-card-title><v-card-text>删除“{{ deletingConnection?.name }}”及保存的 Cookie，并停用115连接。云文件、任务记录和处理规则不会删除。</v-card-text><v-card-actions><v-spacer /><v-btn :disabled="busy" variant="text" @click="deletingConnection = null">返回</v-btn><v-btn :disabled="busy" color="error" @click="command('/api/v1/connections/' + deletingConnection.id, undefined, 'DELETE').then(x => { if (x) { deletingConnection = null; browser = []; diagnosis = null; system.refresh() } })">确认删除</v-btn></v-card-actions></v-card></v-dialog>
 </template>

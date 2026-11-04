@@ -411,19 +411,19 @@ async def browse_connection(request: Request, connection_id: str):
 @router.post("/security/tokens", status_code=201)
 async def create_token(request: Request):
     body = await request.json()
-    if body.get("role") not in {"readonly", "import"}:
+    if body.get("role") not in {"readonly", "import", "admin"}:
         raise ValueError("INVALID_TOKEN_ROLE")
     value = secrets.token_urlsafe(32)
     key = "access-token:" + hashlib.sha256(value.encode()).hexdigest()
     ttl = body.get("ttl_days", 30)
-    if type(ttl) is not int or not 1 <= ttl <= 365:
+    if ttl is not None and (type(ttl) is not int or not 1 <= ttl <= 365):
         raise ValueError("INVALID_TOKEN_EXPIRY")
     with request.app.state.db.session() as session:
         session.add(Settings(key=key, value={"role": body["role"], "name": str(body.get("name", body["role"]))[:100],
                                            "note": str(body.get("note", ""))[:500],
-                                           "expires": time.time() + ttl * 86400}))
+                                           "expires": time.time() + ttl * 86400 if ttl else None}))
         audit(request, session, "TOKEN_CREATE", key, {"role": body["role"]})
-    if body["role"] == "import":
+    if body["role"] in {"import", "admin"}:
         request.app.state.db.set_settings({"require_import_token": True})
     return {"token": value, "id": key, "role": body["role"], "shown_once": True}
 

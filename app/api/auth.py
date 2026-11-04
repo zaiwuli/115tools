@@ -28,7 +28,8 @@ def authenticate(request: Request):
     require_import_key = False
     if import_endpoint:
         require_import_key = request.app.state.db.settings().get("require_import_token", False)
-    if request.app.state.config.local_no_auth and not require_import_key:
+    if (request.app.state.config.local_no_auth and not require_import_key
+            and not request.headers.get("authorization", "").startswith("Bearer ")):
         origin = request.headers.get("origin")
         if (origin and origin != str(request.base_url).rstrip("/")) or request.headers.get(
             "sec-fetch-site"
@@ -46,7 +47,8 @@ def authenticate(request: Request):
         key = "access-token:" + hashlib.sha256(authorization[7:].encode()).hexdigest()
         with request.app.state.db.session() as db:
             saved = db.get(Settings, key)
-            if not saved or saved.value.get("expires", 0) < time.time():
+            if not saved or (saved.value.get("expires") is not None and
+                             saved.value.get("expires", 0) < time.time()):
                 raise HTTPException(401, detail="INVALID_TOKEN")
             role = saved.value["role"]
             request.state.role = role
