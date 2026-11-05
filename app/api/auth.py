@@ -28,7 +28,13 @@ def authenticate(request: Request):
     require_import_key = False
     if import_endpoint:
         require_import_key = request.app.state.db.settings().get("require_import_token", False)
-    if (request.app.state.config.local_no_auth and not require_import_key
+    # Browser uploads from the local UI keep the same authentication mode as
+    # the rest of that UI. External clients must still supply their API token.
+    same_origin_browser = (
+        request.headers.get("sec-fetch-site") in {None, "same-origin"}
+        and request.headers.get("origin") == str(request.base_url).rstrip("/")
+    )
+    if (request.app.state.config.local_no_auth and (not require_import_key or same_origin_browser)
             and not request.headers.get("authorization", "").startswith("Bearer ")):
         origin = request.headers.get("origin")
         if (origin and origin != str(request.base_url).rstrip("/")) or request.headers.get(
