@@ -5,6 +5,7 @@ import os
 import secrets
 import sqlite3
 import time
+from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -36,9 +37,10 @@ def configure_console_logging():
     class CompactFormatter(logging.Formatter):
         icons = {logging.INFO: "ℹ️ INFO", logging.WARNING: "⚠️ WARNING", logging.ERROR: "❌ ERROR"}
         def format(self, record):
-            timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S.%f")[:-3]
+            timestamp = datetime.fromtimestamp(record.created).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             label = self.icons.get(record.levelno, record.levelname)
-            return f"{timestamp} | {label}\n{label.split()[-1] if False else ('ℹ️' if record.levelno == logging.INFO else '⚠️' if record.levelno == logging.WARNING else '❌')} {record.getMessage()}"
+            icon = "ℹ️" if record.levelno == logging.INFO else "⚠️" if record.levelno == logging.WARNING else "❌"
+            return f"{timestamp} | {label}\n{icon} {record.getMessage()}"
     handler = logging.StreamHandler()
     handler.setFormatter(CompactFormatter())
     logging.getLogger("115work").handlers[:] = [handler]
