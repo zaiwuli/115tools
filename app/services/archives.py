@@ -178,6 +178,7 @@ class ArchiveService:
 
     async def scan(self, job):
         cid = job.payload["cid"]
+        scan_started = job.payload.get("scan_started") or time.time()
         if job.payload.get("offline_only"):
             from app.persistence.models import Offline, ResourceLink
             with self.db.session() as session:
@@ -258,18 +259,33 @@ class ArchiveService:
                                    (sources[0].id if sources else ""))
             if next_offset is not None or walking:
                 current_job.payload = current_job.payload | {"offset": next_offset or 0,
-                                                     "candidates": candidates, "walk": walking}
+                                                     "candidates": candidates, "walk": walking, "scan_started": scan_started}
                 return time.time() + 5
             self.offline.bind_candidates(
                 session, cid, [CloudFile(**x) for x in candidates], self.adopt,
                 current_job.payload.get("offline_ids"),
             )
+            from app.persistence.models import Offline, ResourceLink
+            for item in session.scalars(select(Offline).where(
+                Offline.target_cid == cid, Offline.status == "success", Offline.stage == "discover",
+            )):
+                if (job.payload.get("offline_only") and job.payload.get("offline_ids") is not None
+                        and item.id not in job.payload["offline_ids"]):
+                    continue
+                if session.scalar(select(ResourceLink.id).where(ResourceLink.offline_id == item.id)):
+                    continue
+                marker = session.get(Settings, "discovery-success:" + item.id)
+                if marker and scan_started >= marker.value.get("observed_at", 0):
+                    rounds = marker.value.get("rounds", 0) + 1
+                    marker.value = marker.value | {"rounds": rounds, "due": time.time() + 120}
+                    if rounds >= 2:
+                        item.stage, item.error = "discover_review", "DISCOVERY_NOT_FOUND_AFTER_TWO_SCANS"
             record(session, cid, "SCAN_COMPLETED", "discover",
                    f"触发：{job.payload.get('reason', '手动检查')}；目标 CID {cid}；"
                    f"本次读取 {len(collected)} 项，累计候选 {len(candidates)} 项；"
                    f"耗时 {time.monotonic() - started:.2f} 秒")
             current_job.payload = current_job.payload | {"offset": 0, "candidates": [], "walk": [],
-                                   "discovery_started": job.payload.get("discovery_started", time.time())}
+                                   "discovery_started": job.payload.get("discovery_started", time.time()), "scan_started": None}
             waiting = session.scalar(select(Task).where(
                 Task.source == "115", Task.stage == "cloud_prepare", Task.state == "READY",
             ))

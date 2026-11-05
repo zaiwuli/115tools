@@ -541,6 +541,20 @@ async def refresh_offline(request: Request):
     return {"success": True, "operation_id": "offline-poll:115-main"}
 
 
+@secured.post("/api/v1/offline/{task_id}/discover", status_code=202)
+def rediscover_offline(request: Request, task_id: str):
+    with request.app.state.db.session() as session:
+        item = session.get(Offline, task_id)
+        if not item or item.status != "success" or item.stage != "discover_review":
+            raise HTTPException(409, detail="DISCOVERY_REVIEW_REQUIRED")
+        item.stage, item.error = "discover", ""
+        session.merge(Settings(key="discovery-success:" + item.id,
+                               value={"rounds": 1, "due": time.time(), "observed_at": time.time()}))
+        request.app.state.engine.offline.schedule_completed_discovery(session, time.time())
+    request.app.state.engine.wake.set()
+    return {"success": True}
+
+
 @secured.post("/api/v1/offline/{task_id}/cleanup/retry", status_code=202)
 def retry_seed_cleanup(request: Request, task_id: str):
     with request.app.state.db.session() as session:

@@ -9,7 +9,7 @@ from app.adapters.p115 import AdapterError
 from app.domain.links import extract_links, match_name
 from app.persistence.models import (
     Batch, BatchItem, DateFolder, Offline, Operation, ResourceLink,
-    OfflineExecution, Settings, Event,
+    OfflineExecution, Settings, Event, Job,
 )
 from app.scheduler.store import enqueue
 from app.services.events import record
@@ -96,6 +96,7 @@ class OfflineService:
         return result
 
     def schedule_discovery(self, session, now):
+        self.schedule_completed_discovery(session, now)
         for window in session.scalars(select(Settings).where(Settings.key.startswith("offline-window:"))):
             value = window.value
             number = value["round"]
@@ -104,7 +105,7 @@ class OfflineService:
             grouped = {}
             for identifier in value["ids"]:
                 item = session.get(Offline, identifier)
-                if not item or not item.target_cid or item.status in {"failed", "submit_failed", "canceled"}:
+                if not item or not item.target_cid or item.status in {"failed", "submit_failed", "canceled", "success"}:
                     continue
                 if session.get(Settings, "seed-policy:" + identifier) or item.stage in {"complete", "discover_review"}:
                     continue
@@ -119,6 +120,34 @@ class OfflineService:
                 record(session, cid, "DISCOVERY_SCHEDULED", "discover",
                        f"目标 CID {cid}，本轮 {len(ids)} 条，第 {number + 1} 次扫描")
             window.value = value | {"round": number + 1}
+
+    def schedule_completed_discovery(self, session, now):
+        for item in session.scalars(select(Offline).where(
+            Offline.status == "success", Offline.stage == "discover",
+        )):
+            if not item.target_cid or session.get(Settings, "seed-policy:" + item.id):
+                continue
+            if session.scalar(select(ResourceLink.id).where(ResourceLink.offline_id == item.id)):
+                continue
+            marker = session.get(Settings, "discovery-success:" + item.id)
+            if marker is None:
+                marker = Settings(key="discovery-success:" + item.id, value={"rounds": 0, "due": now, "observed_at": now})
+                session.add(marker)
+            value = marker.value
+            if value.get("rounds", 0) >= 2:
+                item.stage, item.error = "discover_review", "DISCOVERY_NOT_FOUND_AFTER_TWO_SCANS"
+                continue
+            if now < value.get("due", 0):
+                continue
+            existing = session.scalar(select(Job).where(Job.key == "scan-cid:" + item.target_cid))
+            # An in-flight scan is reused; completion will count it only if it
+            # read the directory after this item was observed successful.
+            if existing and existing.state in {"RUNNING", "LEASED", "RECONCILING"}:
+                continue
+            enqueue(session, "scan-cid:" + item.target_cid, "cloud_scan", {
+                "cid": item.target_cid, "offline_only": True, "offline_ids": [item.id],
+                "one_shot": True, "reason": "下载成功后产物扫描",
+            })
 
     async def target_folder(self, root: str, date: str) -> str:
         async with self.date_lock:
