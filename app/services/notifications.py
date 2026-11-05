@@ -107,7 +107,8 @@ def enabled(settings, event, category):
 def ms_payload(settings, event, category, task_name):
     titles = {"DISCOVERED": "发现压缩包", "SUCCEEDED": "解压完成", "FAILED": "解压失败",
               "RUNNING": "开始解压", "IMPORT": "离线导入汇总", "TEST": "测试通知",
-              "SUBMITTED": "离线任务已提交", "SUCCESS": "离线任务完成",
+              "SUBMITTED": "成功发送链接，等待下载确认", "DOWNLOAD_STARTED": "已开始下载",
+              "SUCCESS": "离线任务完成",
               "POSTPROCESS_SUCCEEDED": "任务清理完成", "POSTPROCESS_FAILED": "任务清理失败"}
     titles["CLOUD_TAKEOVER"] = "云解压已接管"
     titles.update({"SEED_CLEANUP_COMPLETED": "种子下载后清理完成",
@@ -133,7 +134,7 @@ def ms_payload(settings, event, category, task_name):
             "FAILED": "❌", "POSTPROCESS_SUCCEEDED": "🧹",
             "POSTPROCESS_FAILED": "❌", "SUBMITTED": "📥",
             "SUCCESS": "✅", "IMPORT": "📋", "TEST": "🔔",
-            "CLOUD_TAKEOVER": "☁️",
+            "CLOUD_TAKEOVER": "☁️", "DOWNLOAD_STARTED": "⬇️",
         }.get(event.kind, "⚪"),
         "title": title, "separator": "--------------------",
         "time": datetime.fromtimestamp(event.created_at, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),

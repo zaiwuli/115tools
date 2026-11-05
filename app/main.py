@@ -32,6 +32,22 @@ from app.scheduler.engine import Engine
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def configure_console_logging():
+    class CompactFormatter(logging.Formatter):
+        icons = {logging.INFO: "ℹ️ INFO", logging.WARNING: "⚠️ WARNING", logging.ERROR: "❌ ERROR"}
+        def format(self, record):
+            timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S.%f")[:-3]
+            label = self.icons.get(record.levelno, record.levelname)
+            return f"{timestamp} | {label}\n{label.split()[-1] if False else ('ℹ️' if record.levelno == logging.INFO else '⚠️' if record.levelno == logging.WARNING else '❌')} {record.getMessage()}"
+    handler = logging.StreamHandler()
+    handler.setFormatter(CompactFormatter())
+    logging.getLogger("115work").handlers[:] = [handler]
+    logging.getLogger("115work").setLevel(logging.INFO)
+
+
+configure_console_logging()
+
+
 def migrate(db):
     config = AlembicConfig(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))

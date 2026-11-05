@@ -1,5 +1,6 @@
 import asyncio
 import time
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,8 @@ from app.persistence.models import (
 )
 from app.scheduler.store import enqueue
 from app.services.events import record
+
+logger = logging.getLogger("115work")
 
 
 POLLABLE = {"submitted", "downloading", "unknown", "submission_unknown"}
@@ -173,6 +176,7 @@ class OfflineService:
             ).order_by(Offline.created_at).limit(10)))
         if not tasks:
             return None
+        logger.info("正在向 115 提交 %d 条离线下载链接。", len(tasks))
         cid = await self.target_folder(tasks[0].root_cid, tasks[0].target_date)
         with self.db.session() as session:
             self.job_store.owned(session, job)
@@ -192,6 +196,7 @@ class OfflineService:
         try:
             await self.adapter.submit([t.original_link for t in tasks], cid)
         except AdapterError as exc:
+            logger.error("离线下载提交失败：%s", exc.code)
             with self.db.session() as session:
                 self.job_store.owned(session, job)
                 for item in tasks:
@@ -216,7 +221,10 @@ class OfflineService:
                 execution = session.scalar(select(OfflineExecution).where(
                     OfflineExecution.offline_id == current.id, OfflineExecution.generation == current.generation))
                 execution.status = current.status
-                record(session, current.id, "SUBMITTED", "offline_download", "Submitted", "offline")
+                record(session, current.id, "SUBMITTED", "offline_download", "成功发送链接，等待下载确认", "offline")
+                record(session, current.id, "DOWNLOAD_STARTED", "offline_download", "已开始下载", "offline")
+                logger.info("成功发送链接，等待下载确认。")
+                logger.info("已开始下载：%s", current.name)
         self.snapshot = None
         return time.time() + 2 if len(tasks) == 10 else None
 
@@ -279,7 +287,13 @@ class OfflineService:
                         current.status, current.updated_at = status, now
                         current.error = "REMOTE_OFFLINE_FAILED" if status == "failed" else ""
                         record(session, current.id, status.upper(), "offline_download",
-                               current.error or status, "offline")
+                               ("下载成功" if status == "success" else
+                                "下载失败：" + current.error if status == "failed" else
+                                "下载状态：" + status), "offline")
+                        if status == "success":
+                            logger.info("下载成功：%s", current.name)
+                        elif status == "failed":
+                            logger.error("下载失败：%s（%s）", current.name, current.error)
                     current.check_count += 1
                     execution = session.scalar(select(OfflineExecution).where(
                         OfflineExecution.offline_id == current.id, OfflineExecution.generation == current.generation))

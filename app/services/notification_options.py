@@ -28,7 +28,7 @@ def event_option(event, category):
     if kind in {"OUTPUT_CLEANUP_SUCCEEDED", "OUTPUT_CLEANUP_FAILED", "OUTPUT_FLATTEN_FAILED"}:
         return "post.cleanup_" + ("success" if kind.endswith("SUCCEEDED") else "failed")
     if category == "offline":
-        return {"SUBMITTED": "offline.submitted", "DOWNLOADING": "offline.started", "SUCCESS": "offline.success", "FAILED": "offline.failed", "SUBMIT_FAILED": "offline.failed", "SUBMISSION_UNKNOWN": "offline.unknown", "UNKNOWN": "offline.unknown"}.get(kind, "")
+        return {"SUBMITTED": "offline.submitted", "DOWNLOAD_STARTED": "offline.started", "DOWNLOADING": "offline.started", "SUCCESS": "offline.success", "FAILED": "offline.failed", "SUBMIT_FAILED": "offline.failed", "SUBMISSION_UNKNOWN": "offline.unknown", "UNKNOWN": "offline.unknown"}.get(kind, "")
     if kind == "DOWNLOAD_COMPLETED":
         return "local.download_success"
     if stage in {"cache", "document_copy"}:
