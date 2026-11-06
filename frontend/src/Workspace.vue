@@ -137,7 +137,13 @@ const sources = ref<any[]>([])
 const connections = ref<any[]>([])
 const documentUpload = ref<File | null>(null)
 const sourceExcludes = ref('')
-const newSource = ref({ use_original_rule: false, name: '', kind: 'local', path: '', cid: '', extract_cid: '', output_path: '', interval: 60, mount_marker: '', connection_id: '', virtual_path: '/' })
+const externalBase = ref(window.location.origin)
+const externalFeedback = ref('')
+async function copyExternal(path: string) {
+  const value = externalBase.value.replace(/\/$/, '') + path
+  try { await navigator.clipboard.writeText(value); externalFeedback.value = '地址已复制' } catch { externalFeedback.value = '请选中地址手动复制' }
+}
+const newSource = ref({ bark_enabled: false, bark_path: '', use_original_rule: false, name: '', kind: 'local', path: '', cid: '', extract_cid: '', output_path: '', interval: 60, mount_marker: '', connection_id: '', virtual_path: '/' })
 const newMapping = ref({ virtual_root: '', container_root: '', host_path: '', root_cid: '', connection: '' })
 const diagnosisPath = ref('')
 const diagnosis = ref<any>(null)
@@ -262,7 +268,7 @@ async function showTask(task: any) {
 }
 async function saveSource() {
   const value = newSource.value
-  const fields = value.kind === '115' ? { cid: value.cid, extract_cid: value.extract_cid, use_original_rule: value.use_original_rule } : {
+  const fields = value.kind === '115' ? { cid: value.cid, extract_cid: value.extract_cid, use_original_rule: value.use_original_rule, bark_enabled: value.bark_enabled, bark_path: value.bark_path } : {
     path: value.path, ...(value.kind !== 'inbox' ? { output_path: value.output_path } : {}),
   }
   const config = { ...(editingSource.value?.kind === value.kind ? editingSource.value.config : {}), ...fields }
@@ -283,6 +289,7 @@ function openSource(source?: any) {
   editingSource.value = source || null
   sourceExcludes.value = (source?.config.exclude_paths || []).join('\n')
   newSource.value = {
+    bark_enabled: source?.config.bark_enabled ?? false, bark_path: source?.config.bark_path || '',
     use_original_rule: source ? (source.config.use_original_rule ?? true) : false,
     name: source?.name || '', kind: source?.kind || 'local', path: source?.config.path || '',
     cid: source?.config.cid || '', interval: source?.interval ?? 60,
@@ -469,6 +476,12 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
 
     <template v-else-if="view === 'settings'">
       <SettingsNav />
+      <section v-if="settingsSection === 'external'" class="settings-section"><h2>外部连接</h2><v-text-field v-model="externalBase" label="后端基础地址" hint="默认当前访问地址，可改为其他工具能访问的NAS地址" persistent-hint /><p>{{ externalFeedback }}</p>
+        <h3>快捷指令 / API</h3><v-text-field :model-value="externalBase.replace(/\/$/, '') + '/api/v1/offline/import'" label="链接提交接口" readonly /><v-btn variant="outlined" @click="copyExternal('/api/v1/offline/import')">复制接口地址</v-btn>
+        <details class="mt-4"><summary>快捷指令使用说明</summary><ol><li>添加读取剪贴板或接收分享内容的操作。</li><li>添加“获取URL内容”，填入上方提交接口，方法选择POST。</li><li>请求头添加 Authorization，值为 Bearer 加一个空格和操作令牌。</li><li>请求体选择JSON，text填写剪贴板或分享内容，auto_extract设置为true。</li><li>显示返回结果。支持磁链和ed2k链接；种子文件使用multipart表单file字段上传。</li></ol><p>令牌在连接管理创建，切勿把真实令牌写入分享的快捷指令。</p></details>
+        <h3 class="mt-5">Bark 联动</h3><v-text-field :model-value="externalBase.replace(/\/$/, '') + '/bark'" label="Bark服务地址" readonly /><v-btn variant="outlined" @click="copyExternal('/bark')">复制Bark地址</v-btn><div class="mt-4"><RouterLink to="/connections">管理操作令牌</RouterLink> · <RouterLink to="/sources">配置来源映射</RouterLink> · <RouterLink to="/logs?section=bark">查看收到的消息</RouterLink></div>
+        <details class="mt-4"><summary>Bark 使用说明</summary><ol><li>发送工具的Bark服务器填上方地址，设备key填操作令牌。</li><li>在来源管理编辑115目录，开启Bark联动，填写通知路径的固定前缀，不包含每日日期目录。</li><li>发送测试通知，在Bark消息中确认路径匹配结果。</li></ol><p>只对匹配路径且包含磁链或ed2k链接的通知开启90秒合并窗口。不匹配只记录，不请求网盘。窗口结束共用离线列表第一页维护已有任务，新任务只发现通知关联的目标；下载成功后扫描目标目录当前层。关闭定时监测不影响Bark。</p></details>
+      </section>
       <SystemHealth v-if="settingsSection === 'status'" />
       <section v-if="settingsSection === 'status'" class="settings-section"><h2>默认主页</h2><v-select v-model="settings.default_home" :items="[{ title: '任务中心：解压任务', value: '/tasks' }, { title: '任务中心：离线任务', value: '/tasks?type=offline' }, { title: '离线下载', value: '/offline' }, { title: '来源管理', value: '/sources' }, { title: '处理规则', value: '/rules' }, { title: '密码维护', value: '/passwords' }, { title: '自动任务', value: '/jobs' }, { title: '处理历史', value: '/history' }, { title: '通知记录', value: '/notifications' }, { title: '工作日志', value: '/logs' }, { title: '系统设置', value: '/settings' }, { title: '数据维护', value: '/maintenance' }]" label="默认打开页面" /></section>
       <section v-if="settingsSection === 'downloads'" class="settings-section"><h2>缓存清理</h2><v-switch v-model="settings.cache_auto_cleanup" label="解压及后处理成功后自动删除缓存" color="primary" /></section>
@@ -536,6 +549,7 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
         <template v-if="newSource.kind === '115'"><v-text-field v-model="newSource.cid" label="目录 CID" /><v-text-field v-model="newSource.extract_cid" label="独立云解压输出 CID" /></template>
         <template v-else><v-text-field v-model="newSource.path" label="授权的本地 / 容器路径" /><v-text-field v-if="newSource.kind !== 'inbox'" v-model="newSource.output_path" label="独立解压输出路径" /></template>
         <v-textarea v-if="['local', 'inbox'].includes(newSource.kind)" v-model="sourceExcludes" label="排除路径" rows="3" />
+        <details v-if="newSource.kind === '115'"><summary>Bark 联动</summary><v-switch v-model="newSource.bark_enabled" label="启用通知路径映射" /><v-text-field v-model="newSource.bark_path" label="通知固定路径前缀（不含日期目录）" placeholder="/115open/最近接收/AVDB/综合讨论区" /><p>对应根 CID：{{ newSource.cid }}。路径按目录边界匹配，日期目录由通知自动提取。</p></details>
         <v-switch v-if="newSource.kind === '115'" v-model="newSource.use_original_rule" label="使用处理规则中的原包处理方式" hint="关闭时解压后保留原包；开启后执行匹配规则中的移动、归档或经批准删除" persistent-hint />
         <v-text-field v-if="newSource.kind !== '115'" v-model.number="newSource.interval" type="number" label="扫描间隔 / 秒" />
         <v-btn type="submit" color="primary">保存来源</v-btn>

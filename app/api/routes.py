@@ -75,8 +75,6 @@ async def bark_signal(request: Request, device_key: str = "", message_path: str 
     role = authenticate(Request(scope))
     if role != "admin":
         raise HTTPException(403, detail="READ_ONLY_PERMISSION")
-    if not request.app.state.db.settings()["life_monitor_enabled"]:
-        raise HTTPException(409, detail="LIFE_MONITOR_DISABLED")
     now = time.time()
     with request.app.state.db.session() as session:
         # Keep only display fields, never device_key or arbitrary payload fields.
@@ -84,8 +82,13 @@ async def bark_signal(request: Request, device_key: str = "", message_path: str 
         fields = message_fields(body, message_path, device_key)
         saved_messages = session.get(Settings,"bark-messages")
         messages = list(saved_messages.value.get("items", [])) if saved_messages else []
-        messages.append({"received_at":now, **fields})
+        from app.services.bark import match_signal
+        matched = match_signal(session, fields)
+        messages.append({"received_at":now, **fields, "match":matched})
         session.merge(Settings(key="bark-messages",value={"items":messages[-50:]}))
+        if "source_id" not in matched:
+            record(session,"system","BARK_SIGNAL_IGNORED","cloud_monitor",matched["result"])
+            return {"code":200,"message":"success","timestamp":int(now)}
         window = session.get(Settings,"bark-window")
         value = dict(window.value) if window else {}
         if not value or value.get("dispatched") or now >= value["due"]:
@@ -93,9 +96,12 @@ async def bark_signal(request: Request, device_key: str = "", message_path: str 
             if value and not value.get("dispatched"):
                 from app.services.bark import dispatch
                 dispatch(session,value)
-            value = {"start":now,"due":now+90,"count":1,"dispatched":False}
+            value = {"start":now,"due":now+90,"count":1,"dispatched":False,"signals":[]}
         else:
             value["count"] += 1
+        signal = {k:matched[k] for k in ("source_id","relative","path","hashes")}
+        if signal not in value.setdefault("signals",[]): value["signals"].append(signal)
+        value["signals"] = value["signals"][:100]
         session.merge(Settings(key="bark-window",value=value))
         enqueue(session,"bark-window","bark_window",{},due=value["due"])
         if value["count"] == 1:
@@ -908,7 +914,7 @@ def sources(request: Request):
 def validate_source(request, body, source_id=""):
     config = request.app.state.config
     allowed_fields = {
-        "115": {"cid", "extract_cid", "use_original_rule"}, "local": {"path", "output_path", "exclude_paths"},
+        "115": {"cid", "extract_cid", "use_original_rule", "bark_enabled", "bark_path"}, "local": {"path", "output_path", "exclude_paths"},
         "inbox": {"path", "exclude_paths"},
     }
     if set(body.config) - allowed_fields[body.kind]:
@@ -916,6 +922,13 @@ def validate_source(request, body, source_id=""):
     if "output_path" in body.config and not isinstance(body.config["output_path"], str):
         raise HTTPException(422, detail="INVALID_OUTPUT_PATH")
     if body.kind == "115":
+        if "bark_enabled" in body.config and type(body.config["bark_enabled"]) is not bool:
+            raise HTTPException(422, detail="INVALID_BARK_MAPPING")
+        if "bark_path" in body.config:
+            from app.services.bark import normalize_path
+            prefix = body.config["bark_path"]
+            if not isinstance(prefix,str) or len(prefix)>1024 or (prefix and normalize_path(prefix) in {"", "/"}):
+                raise HTTPException(422, detail="INVALID_BARK_MAPPING")
         if "use_original_rule" in body.config and type(body.config["use_original_rule"]) is not bool:
             raise HTTPException(422, detail="INVALID_SOURCE_RETENTION_SETTING")
         if not isinstance(body.config.get("cid"), str) or not body.config["cid"].isdigit():

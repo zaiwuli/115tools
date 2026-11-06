@@ -207,7 +207,7 @@ watch(() => system.refreshVersion, () => void load())
     <v-progress-linear v-if="busy" indeterminate color="primary" height="2" />
 
     <template v-if="view === 'connections'">
-      <section class="settings-section"><h2>Bark 联动</h2><div class="form-grid"><v-text-field :model-value="barkAddress" label="Bark 服务地址" readonly /><v-btn variant="outlined" @click="copyBarkAddress">复制地址</v-btn></div><p>设备 key 填操作令牌；收到通知后按90秒窗口合并检查。正文可在工作日志的 Bark 消息中查看，最近保留50条。</p></section>
+
       <div class="table-wrap"><table><thead><tr><th>连接</th><th>类型 / 协议</th><th>健康</th><th>凭据</th><th>操作</th></tr></thead><tbody>
         <tr v-for="item in items" :key="item.id"><td><strong>{{ item.name }}</strong><small>{{ item.config.url || ('CID ' + item.config.root_cid) }}</small></td>
           <td>{{ stateLabel(item.kind) }}</td><td>{{ stateLabel(item.health) }}</td><td>{{ item.credential_configured ? '已加密保存' : '未配置' }}<small>版本 {{ item.revision }}</small></td>
@@ -249,7 +249,7 @@ watch(() => system.refreshVersion, () => void load())
     </template>
 
     <RecentEvents v-else-if="view === 'logs' && !route.query.section" />
-    <section v-else-if="view === 'logs' && route.query.section === 'bark'" class="settings-section"><h2>Bark 消息</h2><p>仅保留最近50条，单字段最多4096字符；不会记录设备 key。收到的旧通知无法补回正文。</p><article v-for="(item,index) in barkMessages" :key="index" class="event-line"><div><small>{{ date(item.received_at) }} · {{ item.group }}</small><h3>{{ item.title || '无标题' }}</h3><p style="white-space:pre-wrap;overflow-wrap:anywhere">{{ item.body || '无正文' }}</p></div></article><p v-if="!barkMessages.length">暂无消息，请发送一条新通知。</p></section>
+    <section v-else-if="view === 'logs' && route.query.section === 'bark'" class="settings-section"><h2>Bark 消息</h2><p>仅保留最近50条，单字段最多4096字符；不会记录设备 key。收到的旧通知无法补回正文。</p><article v-for="(item,index) in barkMessages" :key="index" class="event-line"><div><small>{{ date(item.received_at) }} · {{ item.group }}</small><h3>{{ item.title || '无标题' }}</h3><p style="white-space:pre-wrap;overflow-wrap:anywhere">{{ item.body || '无正文' }}</p><small v-if="item.match">{{ item.match.result }} · {{ item.match.path }}</small></div></article><p v-if="!barkMessages.length">暂无消息，请发送一条新通知。</p></section>
     <template v-else>
       <div class="table-wrap"><table><thead><tr><th>时间</th><th>事件 / 操作</th><th>详情</th></tr></thead><tbody>
         <tr v-for="item in (route.query.section === 'runtime' ? runtimeItems : items)" :key="item.id"><td>{{ date(item.created_at) }}</td><td>{{ textLabel(item.kind || item.action) }}</td><td class="path-cell"><div>{{ textLabel(item.message || '') }}</div><details v-if="item.details && Object.keys(item.details).length"><summary>工作详情</summary><dl><template v-for="(value, key) in item.details" :key="key"><dt>{{ key }}</dt><dd class="path-cell">{{ typeof value === 'object' ? JSON.stringify(value, null, 2) : (String(key) === '当前状态' ? textLabel(String(value)) : String(value)) }}</dd></template></dl></details></td></tr>

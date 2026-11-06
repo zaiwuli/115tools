@@ -3,6 +3,7 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 const sections = [
   { key: 'connections', title: '连接管理', to: '/settings/connections' },
+  { key: 'external', title: '外部连接', to: '/settings?section=external' },
   { key: 'cloud', title: '云目录', to: '/settings?section=cloud' },
   { key: 'notifications', title: '通知', to: '/settings?section=notifications' },
   { key: 'scheduler', title: '任务执行', to: '/settings?section=scheduler' },

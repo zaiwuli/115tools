@@ -43,13 +43,14 @@ class CloudMonitor:
 
     def schedule(self, session, now):
         settings = self.db.settings()
+        if not settings["life_monitor_enabled"]: return
         saved = session.get(Settings, "life-monitor-state")
         if saved and saved.value.get("paused"):
             return
         if saved is None or saved.value.get("next", 0) <= now:
             enqueue(session, "life-monitor", "life_monitor", {})
 
-    async def completed_downloads(self):
+    async def completed_downloads(self, signals=None, discover=True):
         from app.persistence.models import Batch, BatchItem
         from app.services.archives import is_archive
         if not hasattr(self.adapter, "offline_task_snapshot"):
@@ -75,11 +76,13 @@ class CloudMonitor:
             status = int(row.get("status", 0))
             if key in seen:
                 continue
-            if saved is None and status == 2:
+            if saved is None and status == 2 and signals is None:
                 seen[key] = now
                 continue
             existing = tracked.get(identity)
             if existing and existing.stage in {"complete", "handed_off"}:
+                continue
+            if not existing and (not discover or (signals is not None and not any(h in x["hashes"] for x in signals))):
                 continue
             if not existing and status < 0:
                 continue
@@ -99,6 +102,9 @@ class CloudMonitor:
                                      if r.config.get("archive_cid") not in (None,"","0"))
                 if set(paths[parent]) & protected: continue
                 matches = [x for x in sources if x.config.get("cid") in paths[parent]]
+                if signals is not None:
+                    allowed = {x["source_id"] for x in signals if h in x["hashes"]}
+                    matches = [x for x in matches if x.id in allowed]
                 if not matches: continue
                 matches.sort(key=lambda x: paths[parent].index(x.config["cid"]), reverse=True)
                 with self.db.session() as session:
@@ -150,7 +156,7 @@ class CloudMonitor:
         day = str(local_now.date())
         with self.db.session() as session:
             item = session.get(Offline, identifier)
-            if not item or item.stage == "handed_off": return None
+            if not item or item.stage == "handed_off" or item.status in {"failed","submit_failed"}: return None
             if item.stage not in {"offline_manual", "discover_review"}: return None
             marker = session.get(Settings, "offline-release:"+identifier)
             state = dict(marker.value) if marker else {"attempts":0}
@@ -207,20 +213,22 @@ class CloudMonitor:
             if scheduled >= 10: break
             marker=session.get(Settings,"offline-release:"+item.id)
             state=marker.value if marker else {}
+            if item.status in {"failed","submit_failed"}: continue
             if state.get("attempts",0)<2 and state.get("day")!=str(local.date()):
                 enqueue(session,"offline-release:"+item.id,"offline_release",
                         {"offline_id":item.id,"automatic":True}, due=now+scheduled*5)
                 scheduled += 1
 
-    async def poll_external(self):
-        candidates = await self.completed_downloads()
+    async def poll_external(self, signals=None, discover=True):
+        candidates = await self.completed_downloads(signals=signals, discover=discover)
         with self.db.session() as session:
             saved = session.get(Settings, "offline-monitor-seen")
             seen = dict(saved.value) if saved else {}
             for key, cid in candidates.items():
                 item = session.scalar(select(Offline).where(Offline.identity == "external:"+key))
                 source = session.get(Settings, "external-source:"+item.id) if item else None
-                if source:
+                configured = session.get(Source,source.value["source_id"]) if source else None
+                if configured and configured.enabled:
                     enqueue(session, "scan-cid:"+cid, "cloud_scan", {
                         "cid":cid,"source_id":source.value["source_id"],
                         "offline_only":False,"one_shot":True,"reason":"外部离线下载完成"})
@@ -229,11 +237,9 @@ class CloudMonitor:
 
     async def run(self, job):
         settings = self.db.settings()
-        await self.archives.offline.poll(manual=True)
-        if not settings["life_monitor_enabled"]:
-            with self.db.session() as session:
-                session.merge(Settings(key="life-monitor-state",value={"next":time.time()+1800}))
+        if not settings["life_monitor_enabled"] and not job.payload.get("manual"):
             return None
+        await self.archives.offline.poll(manual=True)
         with self.db.session() as session:
             saved = session.get(Settings, "life-monitor-state")
             checkpoint = saved.value if saved else {}

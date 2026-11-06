@@ -552,8 +552,6 @@ async def cloud_root(request: Request):
 
 @router.post("/cloud/monitor/check", status_code=202)
 def monitor_check(request: Request):
-    if not request.app.state.db.settings()["life_monitor_enabled"]:
-        raise HTTPException(409, detail="LIFE_MONITOR_DISABLED")
     with request.app.state.db.session() as session:
         from app.persistence.models import Job
         running = session.scalar(select(Job).where(Job.key == "life-monitor"))
