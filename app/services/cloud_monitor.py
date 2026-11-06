@@ -150,6 +150,7 @@ class CloudMonitor:
             protected.update(rule.config["archive_cid"] for rule in session.scalars(select(Rule).where(Rule.enabled))
                              if rule.config.get("archive_cid"))
         checked_parents = set(work.get("processed_parents", []))
+        decisions = []
         for event in events:
             if int(event.get("type", 0)) not in {1, 2, 5, 6, 14, 23, 24}:
                 continue
@@ -171,13 +172,16 @@ class CloudMonitor:
                 if exc.code != "CID_NOT_VERIFIED":
                     raise
                 # Deleted/moved historical directories must not block all new events.
+                decisions.append(f"{parent}:目录校验失效")
                 continue
             ancestors = set(path)
             if ancestors & protected:
+                decisions.append(f"{parent}:位于输出或归档目录")
                 continue
             matched = [source for source in sources if source.config["cid"] in ancestors]
             if len(matched) > 1:
                 matched.sort(key=lambda source: path.index(source.config["cid"]), reverse=True)
+            decisions.append(f"{parent}:匹配来源={matched[0].id if matched else '无'}")
             relevant_offline = [item for item in offline if item.target_cid in ancestors]
             offline_root = settings.get("offline_root_cid")
             if offline_root and offline_root != "0" and offline_root in ancestors:
@@ -217,5 +221,6 @@ class CloudMonitor:
             record(session, "system", "LIFE_BACKLOG" if remaining else "LIFE_CHECKED", "cloud_monitor",
                    f"生活事件{'待续查' if remaining else '检查完成'}：本轮读取 {pages} 页；"
                    f"压缩包候选 {len(events)} 条；核对目录 {len(checked_parents)} 个；"
-                   f"匹配扫描 {len(targets)} 个；待处理目录 {len(remaining)} 个")
+                   f"匹配扫描 {len(targets)} 个；待处理目录 {len(remaining)} 个；"
+                   + "；".join(decisions[:10]))
         return None

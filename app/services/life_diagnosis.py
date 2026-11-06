@@ -37,6 +37,8 @@ async def compare(adapter):
                         "unique_relevant_parents": len({str(r["parent_id"]) for r in relevant if r.get("parent_id")}),
                         "named_archive_rows": len(named), "missing_name_rows": missing_name,
                         "unique_archive_parents": len({str(r["parent_id"]) for r in named if r.get("parent_id")}),
+                        "archive_parent_counts": dict(Counter(str(r.get("parent_id", "")) for r in named)),
+                        "archive_event_examples": [{k: r.get(k) for k in ("id", "file_id", "parent_id", "type", "update_time", "create_time")} for r in named[:10]],
                         "event_types": dict(Counter(str(r.get("type", "unknown")) for r in rows)),
                         "field_names": sorted({k for r in rows for k in r}),
                         "elapsed_seconds": round(time.monotonic() - started, 3)})
