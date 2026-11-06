@@ -114,3 +114,19 @@ def approve_automatic(session, task):
         return
     start_local(session, task)
     record(session, task.id, "FALLBACK_AUTHORIZED", "cache", "按处理规则批准下载原包并本地解压")
+
+
+def cloud_retry_status(task):
+    from app.services.archives import is_archive
+    success = task.policy.get("cloud_succeeded") or task.output.get("verification") in {"remote_manifest", "remote_reported_complete", "remote_completed_and_visible"}
+    visible = bool(task.source == "115" and is_archive(task.name) and not success)
+    reason = ""
+    if task.policy.get("cloud_remote_unsettled") or task.state == "RECONCILING":
+        reason = "请先核对上一次云解压结果"
+    elif task.state not in {"FAILED", "CANCELED", "SKIPPED", "SUCCEEDED", "WAITING_APPROVAL"}:
+        reason = "任务已在处理中"
+    elif task.wait_reason == "IDENTITY":
+        reason = "请先核对内容身份冲突"
+    elif task.output.get("failure_archive_result") in {"PENDING", "FAILED"}:
+        reason = "请先核对原包归档位置"
+    return {"cloud_retry_visible": visible, "can_retry_cloud": visible and not reason, "cloud_retry_reason": reason}

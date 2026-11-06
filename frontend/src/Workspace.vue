@@ -395,7 +395,8 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
             <td><div class="row-actions">
               <button title="详情" aria-label="任务详情" @click="showTask(task)"><Eye :size="17" /></button>
               <template v-if="canWrite">
-              <button v-if="task.state === 'FAILED'" title="重试" aria-label="重试任务" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'retry' })"><RotateCcw :size="17" /></button>
+              <button v-if="task.cloud_retry_visible" :disabled="!task.can_retry_cloud || loading" :title="task.cloud_retry_reason || '重试云解压'" aria-label="重试云解压" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'retry_cloud', expected_version: task.version })"><RotateCcw :size="16" /></button>
+              <button v-if="task.state === 'FAILED' && !task.cloud_retry_visible" title="重试" aria-label="重试任务" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'retry' })"><RotateCcw :size="17" /></button>
               <button v-if="task.stage === 'cloud_password'" title="重试密码" aria-label="重试密码" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'approve' })"><CheckCircle2 :size="17" /></button>
               <button v-if="task.can_download_local || task.can_fallback" title="下载到本地解压" aria-label="下载到本地解压" @click="confirmation = { title: '确认下载原包到运行115tools的设备并本地解压？将占用本地存储和下载流量。成功后按原规则处理云端原包；原云操作未结束时暂缓处理。', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'download_local', expected_version: task.version } }"><Download :size="17" /></button>
               <button v-if="task.output.postprocess_result === 'FAILED'" :title="task.output.cleanup_result === 'FAILED' ? '重试清理' : '重试后处理'" aria-label="重试后处理" @click="action('/api/v1/tasks/' + task.id + '/postprocess/retry')"><RotateCcw :size="17" /></button>

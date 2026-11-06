@@ -478,6 +478,7 @@ class ArchiveService:
                     self.store.owned(session, job)
                     current = session.get(Task, task_id)
                     current.output = task.output | {"verification": "remote_reported_complete"}
+                    current.policy = current.policy | {"cloud_succeeded": True}
                     transition(session, current, "CANCELED" if current.cancel_requested else "SUCCEEDED", "complete")
                     session.merge(Identity(key=current.content_key, task_id=task_id, result="success"))
                     session.merge(Settings(key="cloud_active", value={"value": ""}))

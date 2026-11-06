@@ -23,6 +23,7 @@ from app.persistence.models import (
 )
 from app.scheduler.store import enqueue
 from app.services.events import record, transition
+from app.services.fallback import cloud_retry_status
 
 
 router = APIRouter()
@@ -170,6 +171,7 @@ def list_tasks(request: Request, state: str = "", source: str = "", q: str = "",
         for task in items:
             transfer = session.get(Transfer, task.id)
             rows.append(serialize(task) | {
+                **cloud_retry_status(task),
                 "can_fallback": can_fallback(task),
                 "can_download_local": can_download_local(task),
                 "transfer": serialize(transfer) if transfer else None,
@@ -187,6 +189,7 @@ def task_detail(request: Request, task_id: str, summary: bool = False,
             raise HTTPException(404, detail="TASK_NOT_FOUND")
         result = serialize(task)
         from app.services.fallback import can_fallback, can_download_local
+        result.update(cloud_retry_status(task))
         result["can_fallback"] = can_fallback(task)
         result["can_download_local"] = can_download_local(task)
         from app.services.fallback import can_repeat_local
@@ -322,6 +325,37 @@ def task_command(request, task_id, action, expected_version=None):
                 job.state, job.dirty = "SUCCEEDED", False
             from app.services.fallback import start_local
             start_local(session, task)
+        elif action == "retry_cloud":
+            from app.services.execution import begin_execution
+            status = cloud_retry_status(task)
+            if not status["can_retry_cloud"]:
+                raise HTTPException(409, detail=status["cloud_retry_reason"] or "云解压重试不可用")
+            if session.scalar(select(Job.id).where(
+                Job.payload["task_id"].as_string() == task.id,
+                Job.state.in_(["RUNNING", "LEASED", "READY", "RECONCILING"]),
+            )):
+                raise HTTPException(409, detail="TASK_OPERATIONS_PENDING")
+            if session.scalar(select(Operation).where(
+                Operation.task_id == task.id, Operation.status.in_(["PREPARED", "UNKNOWN"]),
+            )):
+                raise HTTPException(409, detail="请先核对上一次操作结果")
+            begin_execution(session, task)
+            task.policy = {k: v for k, v in task.policy.items() if k not in {
+                "fallback_approved", "cloud_started_at", "cloud_remote_unsettled", "previous_cloud_remote_id",
+            }}
+            task.policy = task.policy | {"auto_extract": True}
+            task.state, task.stage, task.error = "READY", "cloud_prepare", ""
+            task.attempts, task.password_attempts = 0, 0
+            task.output, task.remote_id, task.wait_reason = {}, "", ""
+            task.cancel_requested, task.completed_at = False, None
+            task.updated_at = time.time()
+            identity = session.get(Identity, task.content_key)
+            if identity:
+                session.delete(identity)
+            enqueue(session, "archive:" + task.id, "cloud_extract", {"task_id": task.id})
+            record(session, task.id, "MANUAL_CLOUD_RETRY", "cloud_prepare", "已加入云解压重试队列")
+            import logging
+            logging.getLogger("115work").info("已加入云解压重试队列：%s", task.name)
         elif action == "retry":
             if task.state != "FAILED":
                 raise HTTPException(409, detail="ONLY_FAILED_TASK_CAN_RETRY")

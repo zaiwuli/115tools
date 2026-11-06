@@ -40,11 +40,30 @@ def configure_console_logging():
             timestamp = datetime.fromtimestamp(record.created).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             label = self.icons.get(record.levelno, record.levelname)
             icon = "ℹ️" if record.levelno == logging.INFO else "⚠️" if record.levelno == logging.WARNING else "❌"
-            return f"{timestamp} | {label}\n{icon} {record.getMessage()}"
+            message = f"{timestamp} | {label}\n{icon} {record.getMessage()}"
+            if record.exc_info:
+                message += "\n" + self.formatException(record.exc_info)
+            return message
     handler = logging.StreamHandler()
     handler.setFormatter(CompactFormatter())
-    logging.getLogger("115work").handlers[:] = [handler]
-    logging.getLogger("115work").setLevel(logging.INFO)
+    class AccessFilter(logging.Filter):
+        def filter(self, record):
+            if isinstance(record.args, tuple) and len(record.args) == 5:
+                _, method, path, _, status = record.args
+                if int(status) < 400:
+                    return False
+                record.levelno = logging.ERROR if int(status) >= 500 else logging.WARNING
+                record.levelname = logging.getLevelName(record.levelno)
+                record.msg = "HTTP %s %s → %s"
+                record.args = (method, str(path).split("?", 1)[0], status)
+            return True
+    for name in ("115work", "uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        logger.handlers[:] = [handler]
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    access = logging.getLogger("uvicorn.access")
+    access.filters[:] = [AccessFilter()]
 
 
 configure_console_logging()

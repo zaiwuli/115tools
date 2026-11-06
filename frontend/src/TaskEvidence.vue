@@ -37,6 +37,9 @@ async function command(suffix: string, extra: any = {}) {
 </script>
 
 <template>
+  <div v-if="task.cloud_retry_visible && system.status?.role !== 'readonly'" class="row-actions">
+    <button style="width:30px;height:30px" :disabled="busy || !task.can_retry_cloud" :title="task.cloud_retry_reason || '重试云解压'" aria-label="重试云解压" @click="command('/commands', { action: 'retry_cloud' })"><RotateCcw :size="16" /></button>
+  </div>
   <section v-if="task.can_repeat_local || task.local_executions?.length || task.policy?.manual_local_parent" class="task-evidence">
     <h3>手动本地处理</h3>
     <p v-if="task.policy?.manual_local_parent">这是云端任务的独立本地处理，原云端结果保持不变。</p>
