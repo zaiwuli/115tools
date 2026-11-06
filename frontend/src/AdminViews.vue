@@ -47,6 +47,7 @@ const cleanupEnabled = ref(false)
 const cleanupSuffixes = ref('')
 const cleanupRecursive = ref(true)
 const extractIsos = ref(true)
+const archiveDate = ref(false)
 const archiveCid = ref('')
 const archivePath = ref('')
 const failedCid = ref('')
@@ -114,6 +115,7 @@ function open(item?: any) {
   cleanupSuffixes.value = (item?.config.cleanup_suffixes || []).join(', ')
   cleanupRecursive.value = item?.config.cleanup_recursive ?? true
   extractIsos.value = item?.config.extract_isos ?? true
+  archiveDate.value = item?.config.archive_date ?? false
   archiveCid.value = item?.config.archive_cid || ''
   archivePath.value = item?.config.archive_path || ''
   failedCid.value = item?.config.cloud_failed_cid || ''
@@ -136,7 +138,7 @@ async function save() {
   } else if (view.value === 'rules') {
     const config = { pattern: pattern.value, original_action: originalAction.value,
       document_action: documentAction.value, workflow: workflow.value, auto_fallback: autoFallback.value,
-      document_links: documentLinks.value,
+      document_links: documentLinks.value, archive_date: archiveDate.value,
       disable_recursion: disableRecursion.value, recurse_iso: recurseIso.value,
       squash_root: squashRoot.value,
       cleanup_enabled: cleanupEnabled.value,
@@ -261,7 +263,10 @@ watch(() => system.refreshVersion, () => void load())
             <v-text-field v-model="pattern" label="文件名模式" />
             <v-select v-model="workflow" :items="[{ title: '自动', value: 'auto' }, { title: '本地', value: 'local' }, { title: '云端', value: 'cloud' }, { title: '忽略', value: 'ignore' }]" label="工作流" />
             <h3>02 · 完成后处理</h3>
-            <v-select v-model="originalAction" :items="[{ title: '保留', value: 'retain' }, { title: '归档', value: 'archive' }]" label="原包策略" />
+            <v-select v-model="originalAction" :items="[{ title: '保留', value: 'retain' }, { title: '移动', value: 'move' }, { title: '归档', value: 'archive' }, { title: '删除（需逐任务批准）', value: 'delete' }]" label="原包策略" />
+            <v-text-field v-if="['archive','move'].includes(originalAction)" v-model="archiveCid" label="云端目标目录 CID（留空使用系统归档目录）" />
+            <v-switch v-if="originalAction === 'archive'" v-model="archiveDate" label="按日期创建归档子目录" hint="使用任务首次登记日期，跨天重试保持不变；归档是移动原包，不会重新压缩" persistent-hint />
+            <p v-if="originalAction === 'delete'" class="muted">规则不会自动批准删除；解压成功后仍需逐任务批准，并遵循延迟删除设置。</p>
             <v-select v-model="documentAction" :items="[{ title: '只读登记', value: 'register' }, { title: '复制', value: 'copy' }, { title: '归档', value: 'archive' }]" label="普通文档" />
             <h3>03 · 解压与清理选项</h3>
             <v-switch v-model="disableRecursion" label="禁止递归解压" color="primary" />

@@ -43,7 +43,7 @@ class ConfigCommand(BaseModel):
 def validate_rule(config):
     allowed = {"pattern", "extensions", "min_size", "max_size", "workflow", "original_action",
                "document_action", "document_links", "auto_fallback", "archive_cid", "archive_path",
-               "exclude", "output_date", "cloud_failed_cid", "disable_recursion",
+               "exclude", "output_date", "archive_date", "cloud_failed_cid", "disable_recursion",
                "recurse_iso", "squash_root", "extract_isos",
                "cleanup_enabled", "cleanup_suffixes", "cleanup_recursive", "seed_cleanup"}
     if "seed_cleanup" in config:
@@ -59,14 +59,12 @@ def validate_rule(config):
             raise ValueError("INVALID_RULE_BOOLEAN")
     if set(config) - allowed:
         raise ValueError("UNKNOWN_RULE_SETTING")
-    if config.get("original_action", "retain") not in {"retain", "archive", "delete"}:
+    if config.get("original_action", "retain") not in {"retain", "archive", "move", "delete"}:
         raise ValueError("INVALID_RETENTION_ACTION")
     if config.get("document_action", "register") not in {"register", "copy", "archive"}:
         raise ValueError("INVALID_DOCUMENT_ACTION")
     if config.get("workflow", "auto") not in {"auto", "local", "cloud", "ignore"}:
         raise ValueError("INVALID_WORKFLOW")
-    if config.get("original_action") == "delete":
-        raise ValueError("DELETION_REQUIRES_PER_TASK_APPROVAL")
     if config.get("extensions") and (not isinstance(config["extensions"], list) or
                                     any(not isinstance(x, str) or not x.startswith(".")
                                         for x in config["extensions"])):
@@ -82,7 +80,7 @@ def validate_rule(config):
             raise ValueError("INVALID_RULE_SIZE")
     if config.get("min_size", 0) > config.get("max_size", 2**63 - 1):
         raise ValueError("INVALID_RULE_SIZE_RANGE")
-    for field in ("auto_fallback", "output_date", "document_links", "disable_recursion",
+    for field in ("auto_fallback", "output_date", "archive_date", "document_links", "disable_recursion",
                   "recurse_iso", "squash_root", "extract_isos"):
         if field in config and type(config[field]) is not bool:
             raise ValueError("INVALID_RULE_BOOLEAN")

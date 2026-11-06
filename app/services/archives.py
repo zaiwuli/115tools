@@ -128,6 +128,11 @@ class ArchiveService:
             auto_extract = False
         settings = self.db.settings()
         policy = {"squash_root": True, **policy}
+        if source and source.kind == "115" and not offline_directory:
+            # Missing field preserves existing installations; new UI sources opt in.
+            policy["use_original_rule"] = source.config.get("use_original_rule", True)
+            if not policy["use_original_rule"]:
+                policy["original_action"] = "retain"
         if settings.get("cloud_archive_cid"):
             policy.setdefault("archive_cid", settings["cloud_archive_cid"])
         if settings.get("cloud_failed_cid"):

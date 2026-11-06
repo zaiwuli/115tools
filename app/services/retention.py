@@ -71,6 +71,8 @@ class RetentionService:
             if task.state != "SUCCEEDED":
                 raise ValueError("PROCESSING_SUCCESS_REQUIRED")
             action = task.policy.get("original_action", "retain")
+            if action == "move":
+                action = "archive"
             if (task.policy.get("cleanup_enabled") or task.policy.get("squash_root")) and task.policy.get("rule_id"):
                 rule = session.get(Rule, task.policy["rule_id"])
                 if not rule or not rule.enabled or rule.revision != task.policy["rule_revision"]:
@@ -136,6 +138,17 @@ class RetentionService:
                         raise ValueError("OUTPUT_MANIFEST_MISMATCH")
                 elif verification not in {"remote_manifest", "remote_reported_complete"}:
                     raise ValueError("STRONG_REMOTE_OUTPUT_VERIFICATION_REQUIRED")
+                cid = task.policy.get("archive_cid", "")
+                if action == "archive" and task.policy.get("original_action") != "move" and task.policy.get("archive_date"):
+                    if not cid or not task.policy.get("adopt_date"):
+                        raise ValueError("ARCHIVE_CID_REQUIRED")
+                    if task.policy.get("archive_cid") == task.locator["cid"]:
+                        raise ValueError("ARCHIVE_SOURCE_DIRECTORY_CONFLICT")
+                    from app.services.folders import durable_folder
+                    cid = await durable_folder(self.db, self.adapter, cid, task.policy["adopt_date"],
+                                               f"archive-date:{cid}:{task.policy['adopt_date']}", task.id)
+                if action == "archive" and (not cid or cid == task.locator["cid"]):
+                    raise ValueError("ARCHIVE_CID_REQUIRED")
                 key = f"retain:{operation_scope(task)}:115:{action}"
                 with self.db.session() as session:
                     self.store.owned(session, job)
@@ -146,11 +159,8 @@ class RetentionService:
                         raise ValueError("REMOTE_RETENTION_REQUIRES_RECONCILIATION")
                     session.add(Operation(key=key, task_id=task.id, kind=action,
                                           evidence={"locator": task.locator,
-                                                    "destination": task.policy.get("archive_cid", "")}))
+                                                    "destination": cid}))
                 if action == "archive":
-                    cid = task.policy.get("archive_cid", "")
-                    if not cid or cid == task.locator["cid"]:
-                        raise ValueError("ARCHIVE_CID_REQUIRED")
                     await self.adapter.move_verified(task.locator, cid)
                 else:
                     await self.adapter.delete_verified(task.locator)

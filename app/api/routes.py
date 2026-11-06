@@ -823,7 +823,7 @@ def sources(request: Request):
 def validate_source(request, body, source_id=""):
     config = request.app.state.config
     allowed_fields = {
-        "115": {"cid", "extract_cid"}, "local": {"path", "output_path", "exclude_paths"},
+        "115": {"cid", "extract_cid", "use_original_rule"}, "local": {"path", "output_path", "exclude_paths"},
         "inbox": {"path", "exclude_paths"},
     }
     if set(body.config) - allowed_fields[body.kind]:
@@ -831,6 +831,8 @@ def validate_source(request, body, source_id=""):
     if "output_path" in body.config and not isinstance(body.config["output_path"], str):
         raise HTTPException(422, detail="INVALID_OUTPUT_PATH")
     if body.kind == "115":
+        if "use_original_rule" in body.config and type(body.config["use_original_rule"]) is not bool:
+            raise HTTPException(422, detail="INVALID_SOURCE_RETENTION_SETTING")
         if not isinstance(body.config.get("cid"), str) or not body.config["cid"].isdigit():
             raise HTTPException(422, detail="INVALID_CID")
         if body.config["cid"] in {request.app.state.db.settings().get(key) for key in

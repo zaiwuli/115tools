@@ -137,7 +137,7 @@ const sources = ref<any[]>([])
 const connections = ref<any[]>([])
 const documentUpload = ref<File | null>(null)
 const sourceExcludes = ref('')
-const newSource = ref({ name: '', kind: 'local', path: '', cid: '', extract_cid: '', output_path: '', interval: 60, mount_marker: '', connection_id: '', virtual_path: '/' })
+const newSource = ref({ use_original_rule: false, name: '', kind: 'local', path: '', cid: '', extract_cid: '', output_path: '', interval: 60, mount_marker: '', connection_id: '', virtual_path: '/' })
 const newMapping = ref({ virtual_root: '', container_root: '', host_path: '', root_cid: '', connection: '' })
 const diagnosisPath = ref('')
 const diagnosis = ref<any>(null)
@@ -262,7 +262,7 @@ async function showTask(task: any) {
 }
 async function saveSource() {
   const value = newSource.value
-  const fields = value.kind === '115' ? { cid: value.cid, extract_cid: value.extract_cid } : {
+  const fields = value.kind === '115' ? { cid: value.cid, extract_cid: value.extract_cid, use_original_rule: value.use_original_rule } : {
     path: value.path, ...(value.kind !== 'inbox' ? { output_path: value.output_path } : {}),
   }
   const config = { ...(editingSource.value?.kind === value.kind ? editingSource.value.config : {}), ...fields }
@@ -283,6 +283,7 @@ function openSource(source?: any) {
   editingSource.value = source || null
   sourceExcludes.value = (source?.config.exclude_paths || []).join('\n')
   newSource.value = {
+    use_original_rule: source ? (source.config.use_original_rule ?? true) : false,
     name: source?.name || '', kind: source?.kind || 'local', path: source?.config.path || '',
     cid: source?.config.cid || '', interval: source?.interval ?? 60,
     extract_cid: source?.config.extract_cid || '', output_path: source?.config.output_path || '',
@@ -535,6 +536,7 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
         <template v-if="newSource.kind === '115'"><v-text-field v-model="newSource.cid" label="目录 CID" /><v-text-field v-model="newSource.extract_cid" label="独立云解压输出 CID" /></template>
         <template v-else><v-text-field v-model="newSource.path" label="授权的本地 / 容器路径" /><v-text-field v-if="newSource.kind !== 'inbox'" v-model="newSource.output_path" label="独立解压输出路径" /></template>
         <v-textarea v-if="['local', 'inbox'].includes(newSource.kind)" v-model="sourceExcludes" label="排除路径" rows="3" />
+        <v-switch v-if="newSource.kind === '115'" v-model="newSource.use_original_rule" label="使用处理规则中的原包处理方式" hint="关闭时解压后保留原包；开启后执行匹配规则中的移动、归档或经批准删除" persistent-hint />
         <v-text-field v-if="newSource.kind !== '115'" v-model.number="newSource.interval" type="number" label="扫描间隔 / 秒" />
         <v-btn type="submit" color="primary">保存来源</v-btn>
       </v-form></v-card-text>

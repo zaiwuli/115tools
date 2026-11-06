@@ -96,6 +96,11 @@ class CloudMonitor:
             day += timedelta(days=1)
         targets = {}
         protected = {settings[key] for key in PROTECTED_KEYS if settings.get(key)}
+        # Custom rule destinations must not feed archived originals back into sources.
+        from app.persistence.models import Rule
+        with self.db.session() as session:
+            protected.update(rule.config["archive_cid"] for rule in session.scalars(select(Rule).where(Rule.enabled))
+                             if rule.config.get("archive_cid"))
         for event in events:
             if int(event.get("type", 0)) not in {1, 2, 5, 6, 14, 17, 18, 23}:
                 continue
