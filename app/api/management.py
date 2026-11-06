@@ -501,6 +501,15 @@ async def approve_delete(request: Request, task_id: str):
     return {"operation_id": task_id, "delay_seconds": request.app.state.config.delete_delay_seconds}
 
 
+@router.get("/bark/messages")
+def bark_messages(request: Request):
+    if getattr(request.state,"role","") != "admin":
+        raise HTTPException(403,detail="ADMIN_CONFIGURATION_PERMISSION")
+    with request.app.state.db.session() as session:
+        saved=session.get(Settings,"bark-messages")
+        return {"items":list(reversed(saved.value.get("items",[]))) if saved else []}
+
+
 @router.get("/logs")
 def logs(request: Request, after: int = 0, page_size: int = 100):
     with request.app.state.db.session() as session:

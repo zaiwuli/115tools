@@ -26,6 +26,13 @@ const items = ref<any[]>([])
 const sources = ref<any[]>([])
 const error = ref('')
 const message = ref('')
+const barkMessages = ref<any[]>([])
+const barkAddress = window.location.origin + '/bark'
+async function copyBarkAddress() {
+  try { await navigator.clipboard.writeText(barkAddress); message.value = 'Bark 地址已复制' }
+  catch { error.value = '复制失败，请选中地址手动复制' }
+}
+const runtimeItems = computed(() => items.value.filter(x => ['cloud_monitor','offline_manual','offline_download','discover'].includes(x.stage) || String(x.kind).startsWith('BARK')))
 const busy = ref(false)
 const opened = ref(false)
 const editing = ref<any>(null)
@@ -78,6 +85,7 @@ async function load() {
   try {
     const path = view.value === 'security' ? 'security/tokens' : view.value
     items.value = (await api('/api/v1/' + path)).items
+    if (view.value === 'logs' && system.status?.role !== 'readonly') barkMessages.value = (await api('/api/v1/bark/messages')).items
     if (view.value === 'connections') connectionTokens.value = (await api('/api/v1/security/tokens')).items
     sources.value = (await api('/api/v1/sources')).items
   } catch (e) { error.value = (e as Error).message }
@@ -184,12 +192,14 @@ watch(() => system.refreshVersion, () => void load())
 <template>
   <section v-mobile-tables class="workspace">
     <header class="page-heading"><div><div class="eyebrow">115tools</div><h1>{{ view === 'connections' ? '系统设置' : titles[view] }}</h1></div>
-      <div class="heading-actions"><v-btn v-if="canWrite && ['connections','rules','schedules'].includes(view)" color="primary" @click="open()"><Plus :size="17" class="mr-2" />添加</v-btn>
+      <div class="heading-actions"><v-btn v-if="view === 'logs'" variant="text" :disabled="busy" @click="load"><RefreshCw :size="17" class="mr-2" />刷新</v-btn><v-btn v-if="canWrite && ['connections','rules','schedules'].includes(view)" color="primary" @click="open()"><Plus :size="17" class="mr-2" />添加</v-btn>
         </div>
     </header>
     <SettingsNav v-if="view === 'connections'" />
     <nav v-if="view === 'logs'" class="section-nav" aria-label="工作日志分页">
-      <RouterLink to="/logs" :class="{ active: route.query.section !== 'details' }">最近事件</RouterLink>
+      <RouterLink to="/logs" :class="{ active: !route.query.section }">最近事件</RouterLink>
+      <RouterLink to="/logs?section=runtime" :class="{ active: route.query.section === 'runtime' }">运行日志</RouterLink>
+      <RouterLink v-if="canWrite" to="/logs?section=bark" :class="{ active: route.query.section === 'bark' }">Bark 消息</RouterLink>
       <RouterLink to="/logs?section=details" :class="{ active: route.query.section === 'details' }">工作详情</RouterLink>
     </nav>
     <p v-if="error" role="alert" class="error-text alert">{{ error }}</p>
@@ -197,6 +207,7 @@ watch(() => system.refreshVersion, () => void load())
     <v-progress-linear v-if="busy" indeterminate color="primary" height="2" />
 
     <template v-if="view === 'connections'">
+      <section class="settings-section"><h2>Bark 联动</h2><div class="form-grid"><v-text-field :model-value="barkAddress" label="Bark 服务地址" readonly /><v-btn variant="outlined" @click="copyBarkAddress">复制地址</v-btn></div><p>设备 key 填操作令牌；收到通知后按90秒窗口合并检查。正文可在工作日志的 Bark 消息中查看，最近保留50条。</p></section>
       <div class="table-wrap"><table><thead><tr><th>连接</th><th>类型 / 协议</th><th>健康</th><th>凭据</th><th>操作</th></tr></thead><tbody>
         <tr v-for="item in items" :key="item.id"><td><strong>{{ item.name }}</strong><small>{{ item.config.url || ('CID ' + item.config.root_cid) }}</small></td>
           <td>{{ stateLabel(item.kind) }}</td><td>{{ stateLabel(item.health) }}</td><td>{{ item.credential_configured ? '已加密保存' : '未配置' }}<small>版本 {{ item.revision }}</small></td>
@@ -237,10 +248,11 @@ watch(() => system.refreshVersion, () => void load())
       <section class="settings-section"><h2>管理员密码</h2><div class="form-grid"><v-text-field v-model="newPassword" type="password" label="新密码" autocomplete="new-password" /><v-btn variant="outlined" :disabled="newPassword.length < 12" @click="command('/api/v1/security/password', { password: newPassword }).then(x => x && reload())"><Save :size="17" class="mr-2" />更新密码</v-btn></div></section>
     </template>
 
-    <RecentEvents v-else-if="view === 'logs' && route.query.section !== 'details'" />
+    <RecentEvents v-else-if="view === 'logs' && !route.query.section" />
+    <section v-else-if="view === 'logs' && route.query.section === 'bark'" class="settings-section"><h2>Bark 消息</h2><p>仅保留最近50条，单字段最多4096字符；不会记录设备 key。收到的旧通知无法补回正文。</p><article v-for="(item,index) in barkMessages" :key="index" class="event-line"><div><small>{{ date(item.received_at) }} · {{ item.group }}</small><h3>{{ item.title || '无标题' }}</h3><p style="white-space:pre-wrap;overflow-wrap:anywhere">{{ item.body || '无正文' }}</p></div></article><p v-if="!barkMessages.length">暂无消息，请发送一条新通知。</p></section>
     <template v-else>
       <div class="table-wrap"><table><thead><tr><th>时间</th><th>事件 / 操作</th><th>详情</th></tr></thead><tbody>
-        <tr v-for="item in items" :key="item.id"><td>{{ date(item.created_at) }}</td><td>{{ textLabel(item.kind || item.action) }}</td><td class="path-cell"><div>{{ textLabel(item.message || '') }}</div><details v-if="item.details && Object.keys(item.details).length"><summary>工作详情</summary><dl><template v-for="(value, key) in item.details" :key="key"><dt>{{ key }}</dt><dd class="path-cell">{{ typeof value === 'object' ? JSON.stringify(value, null, 2) : (String(key) === '当前状态' ? textLabel(String(value)) : String(value)) }}</dd></template></dl></details></td></tr>
+        <tr v-for="item in (route.query.section === 'runtime' ? runtimeItems : items)" :key="item.id"><td>{{ date(item.created_at) }}</td><td>{{ textLabel(item.kind || item.action) }}</td><td class="path-cell"><div>{{ textLabel(item.message || '') }}</div><details v-if="item.details && Object.keys(item.details).length"><summary>工作详情</summary><dl><template v-for="(value, key) in item.details" :key="key"><dt>{{ key }}</dt><dd class="path-cell">{{ typeof value === 'object' ? JSON.stringify(value, null, 2) : (String(key) === '当前状态' ? textLabel(String(value)) : String(value)) }}</dd></template></dl></details></td></tr>
       </tbody></table><div v-if="!items.length" class="empty">暂无记录</div></div>
     </template>
 

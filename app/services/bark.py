@@ -27,3 +27,16 @@ async def run(db, job):
             dispatch(session,value)
         saved.value = value
     return None
+
+
+def message_fields(body, message_path, device_key):
+    import re
+    parts = message_path.split("/", 2) if message_path else []
+    fields = {"title":str(body.get("title") or (parts[0] if parts else "")),
+              "body":str(body.get("body") or ("/".join(parts[1:]) if len(parts)>1 else "")),
+              "group":str(body.get("group") or "")}
+    for key, text in fields.items():
+        text = text.replace(device_key,"[令牌已隐藏]")
+        text = re.sub(r"(?i)(bearer\s+)[^\s]+",r"\1[已隐藏]",text)
+        fields[key] = text[:4096]
+    return fields

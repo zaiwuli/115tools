@@ -44,9 +44,24 @@ def attention_condition():
 
 async def bark_signal(request: Request, device_key: str = "", message_path: str = ""):
     # Bark clients use either JSON device_key or a key in the URL path.
+    body = {}
+    if request.method == "POST" and "json" in request.headers.get("content-type", ""):
+        if int(request.headers.get("content-length") or 0) > 65536:
+            raise HTTPException(413, detail="BARK_MESSAGE_TOO_LARGE")
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 65536:
+                raise HTTPException(413, detail="BARK_MESSAGE_TOO_LARGE")
+        try:
+            body = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(422, detail="INVALID_BARK_MESSAGE") from None
+        if not isinstance(body, dict):
+            raise HTTPException(422, detail="INVALID_BARK_MESSAGE")
     if not device_key:
         try:
-            body = await request.json()
+            body = body or await request.json()
         except (ValueError, UnicodeDecodeError):
             raise HTTPException(422, detail="BARK_DEVICE_KEY_REQUIRED") from None
         if not isinstance(body, dict):
@@ -64,6 +79,13 @@ async def bark_signal(request: Request, device_key: str = "", message_path: str 
         raise HTTPException(409, detail="LIFE_MONITOR_DISABLED")
     now = time.time()
     with request.app.state.db.session() as session:
+        # Keep only display fields, never device_key or arbitrary payload fields.
+        from app.services.bark import message_fields
+        fields = message_fields(body, message_path, device_key)
+        saved_messages = session.get(Settings,"bark-messages")
+        messages = list(saved_messages.value.get("items", [])) if saved_messages else []
+        messages.append({"received_at":now, **fields})
+        session.merge(Settings(key="bark-messages",value={"items":messages[-50:]}))
         window = session.get(Settings,"bark-window")
         value = dict(window.value) if window else {}
         if not value or value.get("dispatched") or now >= value["due"]:
