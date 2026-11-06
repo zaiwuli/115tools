@@ -1,5 +1,6 @@
 import time
 import asyncio
+from collections import Counter
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -96,6 +97,14 @@ class CloudMonitor:
             pages += 1
             work["fetched"] += len(rows)
             reached = False
+            with self.db.session() as session:
+                record(session, "system", "LIFE_PAGE_READ", "cloud_monitor",
+                       f"生活事件页：日期 {work['day']}；offset {work['offset']}；返回 {len(rows)}；"
+                       f"边界ID {work['cursor']}；ID范围 "
+                       f"{min((int(r['id']) for r in rows), default=0)}–{max((int(r['id']) for r in rows), default=0)}；"
+                       f"类型 {dict(Counter(str(r.get('type', '')) for r in rows))}；"
+                       f"压缩包事件示例 " + str([{k: r.get(k) for k in ("id", "type", "parent_id", "file_id", "update_time")}
+                                               for r in rows if is_archive(str(r.get("file_name") or r.get("name") or ""))][:5]))
             for event in rows:
                 identifier = int(event["id"])
                 work["newest"] = max(work["newest"], identifier)
