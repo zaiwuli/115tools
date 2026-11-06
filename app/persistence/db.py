@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, select, func
 from sqlalchemy.orm import sessionmaker
 
 from app.persistence.models import Settings
@@ -72,7 +72,8 @@ class Database:
 
     def settings(self) -> dict:
         with self.session() as session:
-            saved = {x.key: x.value["value"] for x in session.scalars(select(Settings))
+            saved = {x.key: x.value["value"] for x in session.scalars(
+                         select(Settings).where(func.json_type(Settings.value, "$.value").is_not(None)))
                      if "value" in x.value}
         return DEFAULT_SETTINGS | saved
 

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import load_only
 
 from app.api.auth import authenticate, configured, password_hash, password_matches
 from app.api.schemas import ImportRequest, LoginRequest, SourceRequest, TaskCommand
@@ -112,7 +113,9 @@ def system_status(request: Request):
     from app.services.component_updates import p115_info
     db = request.app.state.db
     with db.session() as session:
-        tasks = list(session.scalars(select(Task).where(
+        tasks = list(session.scalars(select(Task).options(load_only(
+            Task.id, Task.name, Task.source, Task.state, Task.stage, Task.attempts,
+        )).where(
             Task.state.not_in(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"]),
         ).order_by(Task.created_at.desc()).limit(100)))
         events = list(session.scalars(select(Event).order_by(Event.id.desc()).limit(30)))

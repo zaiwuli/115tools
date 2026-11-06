@@ -12,6 +12,7 @@ import time
 import tarfile
 import zipfile
 from pathlib import Path
+from functools import lru_cache
 
 from app.domain.paths import contained, safe_relative
 from app.runtime.process_limits import limit_worker
@@ -38,6 +39,18 @@ def component_info(config=None):
     if config:
         from app.services.component_manager import active_path
         tool = active_path(config, "7zip") or tool
+    try:
+        identity = Path(tool).stat() if tool else None
+        signature = (identity.st_mtime_ns, identity.st_size) if identity else None
+    except OSError:
+        signature = None
+    if signature is None:
+        return _component_probe.__wrapped__(tool, signature, 0)
+    return dict(_component_probe(tool, signature, int(time.monotonic() // 30)))
+
+
+@lru_cache(maxsize=8)
+def _component_probe(tool, signature, window):
     info = {"name": "7-Zip", "available": False, "version": None,
             "path": tool, "source": "https://www.7-zip.org/",
             "update_policy": "validated_release", "error": "EXTRACTOR_NOT_FOUND"}

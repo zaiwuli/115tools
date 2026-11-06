@@ -194,3 +194,18 @@ curl --fail-with-body 'http://192.168.31.2:9056/api/v1/import/batches/YOUR_BATCH
 `GET /api/status` 可查看应用版本、构建编号、当前令牌权限和组件状态；携带同样的 Authorization 请求头。响应含业务信息，不应公开转发完整内容。
 
 本说明覆盖第三方提交与查询所需接口，其他管理接口不作为此文档的稳定契约。
+
+
+### 内存诊断（只读）
+
+`GET /api/v1/system/metrics` 沿用令牌鉴权，新增 `memory`：
+
+- `process.rss_bytes` / `peak_rss_bytes`：当前进程驻留内存与峰值。
+- `process.private_bytes` / `pss_bytes`：私有内存与按比例分摊的驻留内存。
+- `container.usage_bytes` / `limit_bytes`：所属 cgroup 内存用量与上限。
+- `container.anonymous_bytes` / `file_cache_bytes`：匿名内存与文件缓存。
+- `container.working_set_bytes`：用量减去 inactive_file 的估算值，并非进程私有内存。
+
+大小单位均为字节；不支持或读取不可用时字段为 null、available 为 false。Linux 支持 cgroup v1/v2。进程指标仅包含当前 Python 进程，容器指标包含同组子进程与文件缓存；父级 cgroup 限额未单独遍历。原有 cache_bytes 是数据库记录的磁盘下载缓存大小，不是内存。
+
+部署后应在刚启动、空闲轮询一段时间及处理任务后分别采样，比较 RSS、私有内存和文件缓存，不能仅用容器总量判定泄漏。
