@@ -208,7 +208,7 @@ class P115Adapter:
                 return cached[1]
             rows = []
             complete = False
-            for page in range(1, 4):
+            for page in range(1, 2):
                 if page > 1:
                     await asyncio.sleep(3)
                 response = await self.call(

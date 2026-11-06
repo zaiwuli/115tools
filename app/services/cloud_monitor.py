@@ -43,8 +43,6 @@ class CloudMonitor:
 
     def schedule(self, session, now):
         settings = self.db.settings()
-        if not settings["life_monitor_enabled"]:
-            return
         saved = session.get(Settings, "life-monitor-state")
         if saved and saved.value.get("paused"):
             return
@@ -81,7 +79,7 @@ class CloudMonitor:
                 seen[key] = now
                 continue
             existing = tracked.get(identity)
-            if existing and existing.stage == "complete":
+            if existing and existing.stage in {"complete", "handed_off"}:
                 continue
             if not existing and status < 0:
                 continue
@@ -116,7 +114,7 @@ class CloudMonitor:
                     existing = item
             with self.db.session() as session:
                 item = session.get(Offline, existing.id)
-                if item.stage == "complete": continue
+                if item.stage in {"complete", "handed_off"}: continue
                 if item.status == "failed" and status != 2: continue
                 if status == 2:
                     item.status, item.stage, item.next_check = "success", "discover", None
@@ -126,53 +124,93 @@ class CloudMonitor:
                     item.error = "REMOTE_OFFLINE_FAILED"
                 else:
                     item.status, item.stage = "downloading", "offline_download"
-                    item.check_count += 1
-                    item.next_check = now + {1:180, 2:300}.get(item.check_count, self.db.settings()["offline_fallback_seconds"])
-        # Missing is never success. Timeout allows one bounded, exact-name probe.
+                    if item.next_check is not None and item.next_check <= now:
+                        item.check_count += 1
+                        delay = {1:180, 2:300}.get(item.check_count)
+                        item.next_check = now + delay if delay else None
         with self.db.session() as session:
-            waiting = list(session.scalars(select(Offline).where(Offline.kind == "external", Offline.status.in_(["downloading", "unknown"]))))
-        for old in waiting[:20]:
-            expired = now-old.created_at >= 86400
-            if expired:
-                marker_key = "external-timeout:"+old.id
-                with self.db.session() as session:
-                    attempted = session.get(Settings, marker_key)
-                if not attempted:
-                    with self.db.session() as session:
-                        source_marker = session.get(Settings, "external-source:"+old.id)
-                        source = session.get(Source, source_marker.value["source_id"]) if source_marker else None
-                    if not source or not source.enabled:
-                        continue
-                    path = await self.adapter.directory_path(old.target_cid)
-                    protected = {self.db.settings().get(k) for k in PROTECTED_KEYS} - {None, "", "0"}
-                    from app.persistence.models import Rule
-                    with self.db.session() as session:
-                        protected.update(r.config["archive_cid"] for r in session.scalars(select(Rule).where(Rule.enabled))
-                                         if r.config.get("archive_cid") not in (None,"","0"))
-                    if source.config.get("cid") not in path or set(path) & protected:
-                        continue
-                    page = await self.adapter.files(old.target_cid)
-                    matches = [f for f in page.files if not f.is_dir and is_archive(f.name) and f.name == old.name]
-                    with self.db.session() as session:
-                        session.merge(Settings(key=marker_key, value={"checked":now}))
-                        if len(matches)==1:
-                            source = session.get(Settings,"external-source:"+old.id)
-                            # Adopt only the matching file, never unrelated archives.
-                            self.archives.adopt(session, matches[0], source_id=source.value["source_id"] if source else "")
-                            item=session.get(Offline,old.id);item.stage="complete";item.next_check=None
-                            item.error=""
-                            record(session,item.id,"EXTERNAL_TIMEOUT_RELEASED","discover","观察满24小时，找到同名压缩包，放行一次云解压")
-                            continue
-            if expired or (old.identity not in present and not snapshot["complete"]):
-                with self.db.session() as session:
-                    item=session.get(Offline,old.id)
-                    item.status,item.stage,item.next_check="unknown","offline_manual",None
-                    record(session,item.id,"EXTERNAL_REVIEW","offline_manual","离线状态待核对：超过24小时或本轮3页未覆盖")
+            for item in session.scalars(select(Offline).where(
+                    Offline.kind == "external", Offline.status.in_(["downloading", "unknown"]))):
+                if item.stage != "handed_off" and item.identity not in present:
+                    item.status, item.stage, item.next_check = "unknown", "offline_manual", None
+                    item.error = "OFFLINE_NOT_IN_FIRST_PAGE"
         with self.db.session() as session:
             session.merge(Settings(key="offline-monitor-seen",value=dict(sorted(seen.items(),key=lambda x:x[1])[-10000:])))
             record(session,"system","OFFLINE_MONITOR_READ","cloud_monitor",
-                   f"离线任务读取 {snapshot['pages']} 页；{'完整' if snapshot['complete'] else '达到3页上限，覆盖受限'}；成功待扫描 {len(candidates)} 个")
+                   f"离线任务读取 {snapshot['pages']} 页；仅检查第一页；成功待扫描 {len(candidates)} 个")
         return candidates
+
+    async def release(self, job):
+        from app.persistence.models import ResourceLink, Task, Rule
+        from app.services.archives import is_archive
+        from app.domain.links import match_name
+        identifier = job.payload["offline_id"]
+        automatic = job.payload.get("automatic", False)
+        local_now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        day = str(local_now.date())
+        with self.db.session() as session:
+            item = session.get(Offline, identifier)
+            if not item or item.stage == "handed_off": return None
+            if item.stage not in {"offline_manual", "discover_review"}: return None
+            marker = session.get(Settings, "offline-release:"+identifier)
+            state = dict(marker.value) if marker else {"attempts":0}
+            if automatic and (state["attempts"] >= 2 or state.get("day") == day): return None
+            # Reserve before remote IO, including interrupted/failed attempts.
+            if automatic:
+                state.update(attempts=state["attempts"]+1, day=day)
+            state.update(result="正在查找", updated=time.time())
+            session.merge(Settings(key="offline-release:"+identifier,value=state))
+            name, cid, root = item.name, item.target_cid, item.root_cid
+            source_marker = session.get(Settings,"external-source:"+identifier)
+            source = session.get(Source,source_marker.value["source_id"]) if source_marker else None
+            source_id = source.id if source and source.enabled else ""
+            protected = {self.db.settings().get(k) for k in PROTECTED_KEYS} - {None,"","0"}
+            protected.update(r.config["archive_cid"] for r in session.scalars(select(Rule).where(Rule.enabled))
+                             if r.config.get("archive_cid") not in (None,"","0"))
+        result = "未找到对应压缩包"
+        try:
+            path = await self.adapter.directory_path(cid)
+            if (source_marker and not source_id) or root not in path or set(path) & protected:
+                result = "目标目录不再属于有效来源或属于保护目录"
+            else:
+                page = await self.adapter.files(cid)
+                matches = [f for f in page.files if not f.is_dir and is_archive(f.name)
+                           and match_name(f.name) == match_name(name)]
+                if page.next_offset is not None:
+                    result = "目录超出一页，无法确认唯一匹配"
+                elif len(matches) == 1:
+                    with self.db.session() as session:
+                        task = self.archives.adopt(session,matches[0],source_id=source_id)
+                        if task.source != "115" or task.stage == "local_extract":
+                            raise ValueError("CLOUD_HANDOFF_REQUIRED")
+                        if not session.scalar(select(ResourceLink).where(ResourceLink.offline_id==identifier,ResourceLink.task_id==task.id)):
+                            session.add(ResourceLink(offline_id=identifier,task_id=task.id,evidence="手动或定时同名压缩包核对"))
+                        item=session.get(Offline,identifier)
+                        item.stage,item.next_check,item.error="handed_off",None,""
+                    result = "已转交解压"
+                elif len(matches)>1:
+                    result = "无法唯一匹配压缩包"
+        except (AdapterError, ValueError) as exc:
+            result = "转交未完成：" + (exc.code if isinstance(exc,AdapterError) else str(exc))
+        with self.db.session() as session:
+            state.update(result=result,updated=time.time())
+            session.merge(Settings(key="offline-release:"+identifier,value=state))
+            record(session,identifier,"OFFLINE_RELEASE","offline_manual",
+                   f"{'自动' if automatic else '手动'}尝试转交：{result}；自动次数 {state['attempts']}/2")
+        return None
+
+    def schedule_releases(self, session, now):
+        local = datetime.fromtimestamp(now,ZoneInfo("Asia/Shanghai"))
+        if local.hour < 1: return
+        scheduled = 0
+        for item in session.scalars(select(Offline).where(Offline.stage.in_(["offline_manual","discover_review"]))):
+            if scheduled >= 10: break
+            marker=session.get(Settings,"offline-release:"+item.id)
+            state=marker.value if marker else {}
+            if state.get("attempts",0)<2 and state.get("day")!=str(local.date()):
+                enqueue(session,"offline-release:"+item.id,"offline_release",
+                        {"offline_id":item.id,"automatic":True}, due=now+scheduled*5)
+                scheduled += 1
 
     async def poll_external(self):
         candidates = await self.completed_downloads()
@@ -191,7 +229,10 @@ class CloudMonitor:
 
     async def run(self, job):
         settings = self.db.settings()
+        await self.archives.offline.poll(manual=True)
         if not settings["life_monitor_enabled"]:
+            with self.db.session() as session:
+                session.merge(Settings(key="life-monitor-state",value={"next":time.time()+1800}))
             return None
         with self.db.session() as session:
             saved = session.get(Settings, "life-monitor-state")

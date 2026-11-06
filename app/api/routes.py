@@ -507,6 +507,9 @@ def list_offline(request: Request, page: int = 1, page_size: int = 30):
                 pipeline_stage = processing[0].stage if processing else item.stage
                 row = serialize(item)
                 row.pop("original_link")
+                release = session.get(Settings,"offline-release:"+item.id)
+                row["release"] = release.value if release else {"attempts":0}
+                if item.stage == "handed_off": pipeline_stage = "handed_off"
                 seed = session.get(Settings, "seed-policy:" + item.id)
                 if seed:
                     pipeline_stage = item.stage
@@ -605,6 +608,21 @@ async def refresh_offline(request: Request):
         engine.offline.schedule_poll(session, time.time(), manual=True)
     engine.wake.set()
     return {"success": True, "operation_id": "offline-poll:115-main"}
+
+
+@secured.post("/api/v1/offline/{task_id}/release", status_code=202)
+def release_offline(request: Request, task_id: str):
+    with request.app.state.db.session() as session:
+        item = session.get(Offline, task_id)
+        if not item or item.stage not in {"offline_manual", "discover_review"}:
+            raise HTTPException(409, detail="DISCOVERY_REVIEW_REQUIRED")
+        running = session.scalar(select(Job).where(Job.key == "offline-release:"+task_id))
+        if running and running.state in {"RUNNING", "LEASED"}:
+            return {"success":True}
+        enqueue(session, "offline-release:"+task_id, "offline_release",
+                {"offline_id":task_id,"automatic":False}, manual_reset=True)
+    request.app.state.engine.wake.set()
+    return {"success":True}
 
 
 @secured.post("/api/v1/offline/{task_id}/discover", status_code=202)

@@ -110,6 +110,7 @@ class Engine:
                 self.next_cache_cleanup = now + 60
             self.offline.schedule_poll(session, now)
             self.offline.schedule_discovery(session, now)
+            self.monitor.schedule_releases(session, now)
             if self.config.adapter == "p115":
                 self.monitor.schedule(session, now)
             for source in session.scalars(select(Source).where(
@@ -139,6 +140,7 @@ class Engine:
             handler = {
                 "cloud_timeout_check": self.timeout_check,
                 "life_monitor": self.monitor.run,
+                "offline_release": self.monitor.release,
                 "offline_submit": self.offline.submit_job,
                 "offline_poll": self.poll_job,
                 "cloud_scan": self.archives.scan,
@@ -358,7 +360,7 @@ class Engine:
                 "cloud_timeout_check", "offline_submit", "offline_poll", "cloud_scan", "cloud_extract",
                 "local_scan", "local_extract", "document", "notifications",
                 "postprocess", "cache_gc", "document_copy", "failure_archive",
-                "life_monitor",
+                "life_monitor", "offline_release",
                 "seed_cleanup",
             ]
             kinds = ["notifications", "cache_gc"] if paused else all_kinds

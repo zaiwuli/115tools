@@ -254,24 +254,15 @@ class OfflineService:
     def schedule_poll(self, session, now: float, manual: bool = False):
         if not manual:
             self.pause_expired(session, now)
-        query = select(Offline).where(Offline.status.in_(POLLABLE))
+        query = select(Offline).where(Offline.status.in_(POLLABLE), Offline.stage != "handed_off")
         if not manual:
             query = query.where(Offline.next_check <= now)
         if session.scalar(query.limit(1)):
             enqueue(session, "offline-poll:115-main", "offline_poll", {"manual": manual})
 
     def pause_expired(self, session, now):
-        tasks = session.scalars(select(Offline).where(
-            Offline.status.in_(POLLABLE), Offline.next_check.is_not(None), Offline.kind != "external"))
-        for task in tasks:
-            execution = session.scalar(select(OfflineExecution).where(
-                OfflineExecution.offline_id == task.id,
-                OfflineExecution.generation == task.generation))
-            started = execution.created_at if execution else task.created_at
-            if now >= started + POLL_DEADLINE_SECONDS:
-                task.next_check, task.stage = None, "offline_manual"
-                record(session, task.id, "OFFLINE_POLL_PAUSED", "offline_manual",
-                       "离线状态自动查询已满24小时，等待手动查询；未判定下载失败")
+        # Observation continues only through the shared monitor after quick checks.
+        return
 
     async def poll(self, job=None, now: float | None = None, manual: bool = False):
         now = time.time() if now is None else now
@@ -279,7 +270,7 @@ class OfflineService:
             with self.db.session() as session:
                 if not manual:
                     self.pause_expired(session, now)
-                query = select(Offline).where(Offline.status.in_(POLLABLE))
+                query = select(Offline).where(Offline.status.in_(POLLABLE), Offline.stage != "handed_off")
                 if not manual:
                     query = query.where(Offline.next_check <= now)
                 tasks = list(session.scalars(query.where(Offline.kind != "external")))
@@ -317,22 +308,20 @@ class OfflineService:
                             logger.info("下载成功：%s", current.name)
                         elif status == "failed":
                             logger.error("下载失败：%s（%s）", current.name, current.error)
-                    current.check_count += 1
+                    advance = current.next_check is not None and current.next_check <= now
+                    if advance:
+                        current.check_count += 1
                     execution = session.scalar(select(OfflineExecution).where(
                         OfflineExecution.offline_id == current.id, OfflineExecution.generation == current.generation))
                     if execution:
                         execution.status, execution.error = current.status, current.error
-                    interval = {1: 180, 2: 300}.get(
-                        current.check_count, self.db.settings()["offline_fallback_seconds"]
-                    )
-                    started = execution.created_at if execution else current.created_at
-                    expired = now >= started + POLL_DEADLINE_SECONDS
-                    current.next_check = (
-                        min(now + interval, started + POLL_DEADLINE_SECONDS)
-                        if status in POLLABLE and not expired else None
-                    )
+                    interval = {1: 180, 2: 300}.get(current.check_count)
+                    if advance or status not in POLLABLE:
+                        current.next_check = now + interval if status in POLLABLE and interval else None
                     if status in POLLABLE:
-                        current.stage = "offline_manual" if expired else "offline_download"
+                        current.stage = "offline_download"
+                    if not matches:
+                        current.status, current.stage, current.next_check = "unknown", "offline_manual", None
                     if status == "success":
                         current.stage = "discover"
                         seed = session.get(Settings, "seed-policy:" + current.id)
@@ -358,7 +347,7 @@ class OfflineService:
         if offline_ids is not None:
             tasks = [item for item in tasks if item.id in offline_ids]
         for item in tasks:
-            if item.kind == "external" and (item.status != "success" or item.stage == "complete"):
+            if item.kind == "external" and (item.status != "success" or item.stage in {"complete", "handed_off"}):
                 continue
             seed = session.get(Settings, "seed-policy:" + item.id)
             if seed:
