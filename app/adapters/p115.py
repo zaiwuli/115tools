@@ -65,6 +65,8 @@ class P115Adapter:
         if not cookie:
             raise ValueError("COOKIE_REQUIRED")
         from app.runtime.memory import mark_startup
+        from app.runtime.dependency_warnings import filter_iterdir_warnings
+        filter_iterdir_warnings()
         mark_startup("p115_import_begin")
         from p115client import P115Client
         mark_startup("p115_imported")
