@@ -209,3 +209,6 @@ curl --fail-with-body 'http://192.168.31.2:9056/api/v1/import/batches/YOUR_BATCH
 大小单位均为字节；不支持或读取不可用时字段为 null、available 为 false。Linux 支持 cgroup v1/v2。进程指标仅包含当前 Python 进程，容器指标包含同组子进程与文件缓存；父级 cgroup 限额未单独遍历。原有 cache_bytes 是数据库记录的磁盘下载缓存大小，不是内存。
 
 部署后应在刚启动、空闲轮询一段时间及处理任务后分别采样，比较 RSS、私有内存和文件缓存，不能仅用容器总量判定泄漏。
+
+
+`startup_memory` 为本次进程启动的分阶段内存快照（最多 32 条，不写数据库）。每项包括 stage、进程与容器内存、rss_delta_bytes。阶段覆盖入口、启动依赖、Uvicorn、Alembic、Web/数据库依赖、路由、处理模块、数据库备份/迁移、p115 导入/客户端创建和调度器启动。增量按实际导入顺序计算，共享依赖归入先加载阶段，不代表模块独占内存。非标准启动入口可能缺少 launcher 阶段；非 Linux 环境 RSS 返回 null。只记录数值，不启用 tracemalloc，不包含凭据。更新镜像并重启后可查询；旧进程的启动数据无法追溯。

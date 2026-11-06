@@ -1,3 +1,4 @@
+# ruff: noqa: E402 -- startup measurements intentionally bracket imports
 import logging
 import asyncio
 import contextlib
@@ -9,8 +10,14 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from app.runtime.memory import mark_startup
+
+mark_startup("application_import_begin")
+
 from alembic import command
 from alembic.config import Config as AlembicConfig
+mark_startup("alembic_loaded")
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -19,15 +26,21 @@ from filelock import FileLock
 from pydantic import ValidationError
 from sqlalchemy import select, text
 
+mark_startup("web_database_dependencies_loaded")
+
 from app.adapters.p115 import DisabledAdapter, FakeP115Adapter, P115Adapter
 from app.api.routes import router
 from app.api.management import router as management_router
+
+mark_startup("api_routes_loaded")
 from app.persistence.models import Connection
 from app.persistence.db import Database
 from app.runtime.config import Config
 from app.runtime.secrets import SecretStore
 from app.runtime.request_limits import RequestLimitMiddleware
 from app.scheduler.engine import Engine
+
+mark_startup("processing_modules_loaded")
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -82,6 +95,7 @@ def create_app(config: Config | None = None, adapter=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app):
+        mark_startup("lifespan_begin")
         config.prepare()
         lock = FileLock(str(config.data_dir / "config" / "owner.lock"), timeout=0)
         lock.acquire()
@@ -93,7 +107,9 @@ def create_app(config: Config | None = None, adapter=None) -> FastAPI:
                     with sqlite3.connect(backups / f"startup-{time.time_ns()}.db") as target:
                         source.backup(target)
             db = Database(config.db_path)
+            mark_startup("database_backup_and_engine_ready")
             migrate(db)
+            mark_startup("database_migrated")
             key_path = config.data_dir / "config/master.key"
             if not key_path.exists():
                 with db.session() as session:
@@ -110,6 +126,7 @@ def create_app(config: Config | None = None, adapter=None) -> FastAPI:
                         output.write(secrets.token_urlsafe(32))
                 token = token_path.read_text(encoding="ascii").strip()
             config.adapter = db.settings().get("adapter_mode", config.adapter)
+            mark_startup("credentials_ready")
             if adapter is not None:
                 selected = adapter
             elif config.adapter == "p115":
@@ -128,15 +145,19 @@ def create_app(config: Config | None = None, adapter=None) -> FastAPI:
                 selected = DisabledAdapter()
             else:
                 raise ValueError("UNKNOWN_ADAPTER_MODE")
+            mark_startup("adapter_initialized")
             engine = Engine(db, config, selected, secret_store)
             app.state.db, app.state.config, app.state.secrets = db, config, secret_store
             app.state.engine, app.state.api_token = engine, token
             app.state.login_attempts = {}
+            mark_startup("engine_constructed")
             engine.start()
+            mark_startup("scheduler_started")
             app.state.ready = True
             from app.services.component_updates import monitor
             update_task = (asyncio.create_task(monitor(db, config))
                            if config.scheduler_enabled else None)
+            mark_startup("startup_ready")
             try:
                 yield
             finally:
@@ -231,3 +252,4 @@ def create_app(config: Config | None = None, adapter=None) -> FastAPI:
 
 
 app = create_app()
+mark_startup("application_created")

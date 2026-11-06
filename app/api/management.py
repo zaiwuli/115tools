@@ -659,12 +659,12 @@ def component_check_settings(command: ComponentCheckSettings, request: Request):
 @router.get("/system/metrics")
 def metrics(request: Request):
     from sqlalchemy import func
-    from app.runtime.memory import memory_snapshot
+    from app.runtime.memory import memory_snapshot, startup_samples
     from app.persistence.models import CacheEntry, Job, Outbox
     db = request.app.state.db
     with db.session() as session:
         circuit = session.get(Settings, "circuit:115-main")
-        return {"memory": memory_snapshot(),
+        return {"memory": memory_snapshot(), "startup_memory": startup_samples(),
                 "remote": getattr(request.app.state.engine.adapter, "metrics", {}),
                 "cache_bytes": session.scalar(select(func.sum(CacheEntry.size))) or 0,
                 "active_jobs": session.scalar(select(func.count(Job.id)).where(Job.state == "RUNNING")),

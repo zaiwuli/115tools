@@ -68,3 +68,23 @@ def memory_snapshot(proc=Path("/proc"), cgroup=Path("/sys/fs/cgroup")):
                          working_set_bytes=max(0, usage - inactive) if inactive is not None else None)
         break
     return {"sampled_at": time.time(), "unit": "bytes", "process": process, "container": container}
+
+
+_STARTUP_SAMPLES = []
+
+
+def mark_startup(stage):
+    """Bounded measurements only; no object tracing, collection or task execution."""
+    if len(_STARTUP_SAMPLES) >= 32:
+        return
+    sample = memory_snapshot()
+    current = sample["process"]["rss_bytes"]
+    previous = _STARTUP_SAMPLES[-1]["process"]["rss_bytes"] if _STARTUP_SAMPLES else None
+    sample.update(stage=stage, rss_delta_bytes=(current - previous
+                  if current is not None and previous is not None else None))
+    _STARTUP_SAMPLES.append(sample)
+
+
+def startup_samples():
+    import copy
+    return copy.deepcopy(_STARTUP_SAMPLES)

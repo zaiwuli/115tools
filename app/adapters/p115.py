@@ -64,9 +64,13 @@ class P115Adapter:
     def __init__(self, cookie: str, timeout: float = 45):
         if not cookie:
             raise ValueError("COOKIE_REQUIRED")
+        from app.runtime.memory import mark_startup
+        mark_startup("p115_import_begin")
         from p115client import P115Client
+        mark_startup("p115_imported")
 
         self.client = P115Client(cookie, console_qrcode=False)
+        mark_startup("p115_client_created")
         self.timeout = timeout
         self.request_lock = asyncio.Lock()
         self.snapshot_lock = asyncio.Lock()
