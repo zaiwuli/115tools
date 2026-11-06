@@ -541,21 +541,6 @@ async def cloud_root(request: Request):
     return await initialize_root(request.app.state, cid)
 
 
-@router.post("/cloud/monitor/diagnose")
-async def monitor_diagnose(request: Request):
-    from app.services.life_diagnosis import compare
-    state = request.app.state
-    if state.config.adapter != "p115":
-        raise HTTPException(409, detail="115_CONNECTION_REQUIRED")
-    # Reserve a shared cooldown before awaiting network I/O.
-    with state.db.session() as session:
-        previous = session.get(Settings, "life-diagnose-cooldown")
-        if previous and previous.value.get("until", 0) > time.time():
-            raise HTTPException(429, detail="请至少间隔15分钟再测试")
-        session.merge(Settings(key="life-diagnose-cooldown", value={"until": time.time() + 900}))
-    return await compare(state.engine.adapter)
-
-
 @router.post("/cloud/monitor/check", status_code=202)
 def monitor_check(request: Request):
     if not request.app.state.db.settings()["life_monitor_enabled"]:
