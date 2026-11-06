@@ -262,7 +262,7 @@ class OfflineService:
 
     def pause_expired(self, session, now):
         tasks = session.scalars(select(Offline).where(
-            Offline.status.in_(POLLABLE), Offline.next_check.is_not(None)))
+            Offline.status.in_(POLLABLE), Offline.next_check.is_not(None), Offline.kind != "external"))
         for task in tasks:
             execution = session.scalar(select(OfflineExecution).where(
                 OfflineExecution.offline_id == task.id,
@@ -282,7 +282,7 @@ class OfflineService:
                 query = select(Offline).where(Offline.status.in_(POLLABLE))
                 if not manual:
                     query = query.where(Offline.next_check <= now)
-                tasks = list(session.scalars(query))
+                tasks = list(session.scalars(query.where(Offline.kind != "external")))
             if not tasks:
                 return
             if self.snapshot and now - self.snapshot[0] < 20:
@@ -358,6 +358,8 @@ class OfflineService:
         if offline_ids is not None:
             tasks = [item for item in tasks if item.id in offline_ids]
         for item in tasks:
+            if item.kind == "external" and (item.status != "success" or item.stage == "complete"):
+                continue
             seed = session.get(Settings, "seed-policy:" + item.id)
             if seed:
                 # Only a remote completion observation may authorize seed cleanup.
@@ -443,6 +445,8 @@ class OfflineService:
             if task_id and not tasks:
                 raise ValueError("ONLY_TERMINAL_FAILURE_CAN_RETRY")
             for item in tasks:
+                if item.kind == "external":
+                    continue
                 cutoff = session.scalar(select(func.max(Event.id)).where(Event.task_id == item.id)) or 0
                 session.merge(Settings(key="offline-notification-cutoff:" + item.id, value={"id": cutoff}))
                 item.status, item.error, item.check_count = "queued", "", 0

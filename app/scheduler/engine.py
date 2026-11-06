@@ -47,6 +47,7 @@ class Engine:
         self.retention = RetentionService(db, config, self.store, adapter)
         self.local.transfer = TransferService(db, config, self.store, adapter)
         self.monitor = CloudMonitor(db, adapter)
+        self.monitor.archives = self.archives
 
     def initialize(self):
         self.store.recover()
@@ -261,6 +262,8 @@ class Engine:
 
     async def poll_job(self, job):
         await self.offline.poll(job, manual=job.payload.get("manual", False))
+        if self.db.settings()["life_monitor_enabled"]:
+            await self.monitor.poll_external()
         return None
 
     async def cleanup_seed(self, job):

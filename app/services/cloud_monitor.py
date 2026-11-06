@@ -51,6 +51,144 @@ class CloudMonitor:
         if saved is None or saved.value.get("next", 0) <= now:
             enqueue(session, "life-monitor", "life_monitor", {})
 
+    async def completed_downloads(self):
+        from app.persistence.models import Batch, BatchItem
+        from app.services.archives import is_archive
+        if not hasattr(self.adapter, "offline_task_snapshot"):
+            return {}
+        snapshot = await self.adapter.offline_task_snapshot()
+        now = time.time()
+        with self.db.session() as session:
+            saved = session.get(Settings, "offline-monitor-seen")
+            seen = dict(saved.value) if saved else {}
+            sources = list(session.scalars(select(Source).where(Source.kind == "115", Source.enabled)))
+            owned = {x.hash_value.lower() for x in session.scalars(select(Offline))
+                     if not x.identity.startswith("external:") and x.hash_value}
+            tracked = {x.identity: x for x in session.scalars(select(Offline).where(Offline.kind == "external"))}
+        candidates, paths, present = {}, {}, set()
+        for row in snapshot["rows"]:
+            parent = str(row.get("wp_path_id") or "")
+            h = str(row.get("info_hash") or row.get("hash") or "").lower()
+            if not parent.isdecimal() or not h or h in owned:
+                continue
+            key = f"{h}:{row.get('add_time', '')}:{parent}"
+            identity = "external:" + key
+            present.add(identity)
+            status = int(row.get("status", 0))
+            if key in seen:
+                continue
+            if saved is None and status == 2:
+                seen[key] = now
+                continue
+            existing = tracked.get(identity)
+            if existing and existing.stage == "complete":
+                continue
+            if not existing and status < 0:
+                continue
+            if not existing:
+                if parent not in paths:
+                    if len(paths) >= 20:
+                        continue
+                    try:
+                        paths[parent] = await self.adapter.directory_path(parent)
+                    except AdapterError as exc:
+                        if exc.code != "CID_NOT_VERIFIED": raise
+                        paths[parent] = []
+                from app.persistence.models import Rule
+                with self.db.session() as session:
+                    protected = {self.db.settings().get(k) for k in PROTECTED_KEYS} - {None, "", "0"}
+                    protected.update(r.config["archive_cid"] for r in session.scalars(select(Rule).where(Rule.enabled))
+                                     if r.config.get("archive_cid") not in (None,"","0"))
+                if set(paths[parent]) & protected: continue
+                matches = [x for x in sources if x.config.get("cid") in paths[parent]]
+                if not matches: continue
+                matches.sort(key=lambda x: paths[parent].index(x.config["cid"]), reverse=True)
+                with self.db.session() as session:
+                    batch = Batch(target_date=str(datetime.fromtimestamp(now).date()), root_cid=matches[0].config["cid"], target_cid=parent)
+                    session.add(batch); session.flush()
+                    item = Offline(identity=identity, original_link="", name=str(row.get("name") or row.get("file_name") or h),
+                                   kind="external", hash_value=h, batch_id=batch.id, target_date=batch.target_date,
+                                   root_cid=batch.root_cid, target_cid=parent, status="downloading", stage="offline_download",
+                                   next_check=now+15)
+                    session.add(item);session.flush()
+                    session.add(BatchItem(batch_id=batch.id, task_id=item.id))
+                    session.merge(Settings(key="external-source:"+item.id, value={"source_id":matches[0].id}))
+                    existing = item
+            with self.db.session() as session:
+                item = session.get(Offline, existing.id)
+                if item.stage == "complete": continue
+                if item.status == "failed" and status != 2: continue
+                if status == 2:
+                    item.status, item.stage, item.next_check = "success", "discover", None
+                    candidates[key] = parent
+                elif status < 0:
+                    item.status, item.stage, item.next_check = "failed", "offline_manual", None
+                    item.error = "REMOTE_OFFLINE_FAILED"
+                else:
+                    item.status, item.stage = "downloading", "offline_download"
+                    item.check_count += 1
+                    item.next_check = now + {1:180, 2:300}.get(item.check_count, self.db.settings()["offline_fallback_seconds"])
+        # Missing is never success. Timeout allows one bounded, exact-name probe.
+        with self.db.session() as session:
+            waiting = list(session.scalars(select(Offline).where(Offline.kind == "external", Offline.status.in_(["downloading", "unknown"]))))
+        for old in waiting[:20]:
+            expired = now-old.created_at >= 86400
+            if expired:
+                marker_key = "external-timeout:"+old.id
+                with self.db.session() as session:
+                    attempted = session.get(Settings, marker_key)
+                if not attempted:
+                    with self.db.session() as session:
+                        source_marker = session.get(Settings, "external-source:"+old.id)
+                        source = session.get(Source, source_marker.value["source_id"]) if source_marker else None
+                    if not source or not source.enabled:
+                        continue
+                    path = await self.adapter.directory_path(old.target_cid)
+                    protected = {self.db.settings().get(k) for k in PROTECTED_KEYS} - {None, "", "0"}
+                    from app.persistence.models import Rule
+                    with self.db.session() as session:
+                        protected.update(r.config["archive_cid"] for r in session.scalars(select(Rule).where(Rule.enabled))
+                                         if r.config.get("archive_cid") not in (None,"","0"))
+                    if source.config.get("cid") not in path or set(path) & protected:
+                        continue
+                    page = await self.adapter.files(old.target_cid)
+                    matches = [f for f in page.files if not f.is_dir and is_archive(f.name) and f.name == old.name]
+                    with self.db.session() as session:
+                        session.merge(Settings(key=marker_key, value={"checked":now}))
+                        if len(matches)==1:
+                            source = session.get(Settings,"external-source:"+old.id)
+                            # Adopt only the matching file, never unrelated archives.
+                            self.archives.adopt(session, matches[0], source_id=source.value["source_id"] if source else "")
+                            item=session.get(Offline,old.id);item.stage="complete";item.next_check=None
+                            item.error=""
+                            record(session,item.id,"EXTERNAL_TIMEOUT_RELEASED","discover","观察满24小时，找到同名压缩包，放行一次云解压")
+                            continue
+            if expired or (old.identity not in present and not snapshot["complete"]):
+                with self.db.session() as session:
+                    item=session.get(Offline,old.id)
+                    item.status,item.stage,item.next_check="unknown","offline_manual",None
+                    record(session,item.id,"EXTERNAL_REVIEW","offline_manual","离线状态待核对：超过24小时或本轮3页未覆盖")
+        with self.db.session() as session:
+            session.merge(Settings(key="offline-monitor-seen",value=dict(sorted(seen.items(),key=lambda x:x[1])[-10000:])))
+            record(session,"system","OFFLINE_MONITOR_READ","cloud_monitor",
+                   f"离线任务读取 {snapshot['pages']} 页；{'完整' if snapshot['complete'] else '达到3页上限，覆盖受限'}；成功待扫描 {len(candidates)} 个")
+        return candidates
+
+    async def poll_external(self):
+        candidates = await self.completed_downloads()
+        with self.db.session() as session:
+            saved = session.get(Settings, "offline-monitor-seen")
+            seen = dict(saved.value) if saved else {}
+            for key, cid in candidates.items():
+                item = session.scalar(select(Offline).where(Offline.identity == "external:"+key))
+                source = session.get(Settings, "external-source:"+item.id) if item else None
+                if source:
+                    enqueue(session, "scan-cid:"+cid, "cloud_scan", {
+                        "cid":cid,"source_id":source.value["source_id"],
+                        "offline_only":False,"one_shot":True,"reason":"外部离线下载完成"})
+                    seen[key] = time.time()
+            session.merge(Settings(key="offline-monitor-seen",value=seen))
+
     async def run(self, job):
         settings = self.db.settings()
         if not settings["life_monitor_enabled"]:
@@ -151,13 +289,22 @@ class CloudMonitor:
             if isinstance(name, str) and name and not is_archive(name):
                 continue
             events.append(event)
+        # Keep the snapshot with pending life work so interrupted batches resume
+        # without fetching the same offline pages again.
+        if "offline_candidates" not in work:
+            work["offline_candidates"] = await self.completed_downloads()
+            with self.db.session() as session:
+                session.merge(Settings(key="life-monitor-pending", value=dict(work)))
+        events.extend({"id": "0", "type": 2, "parent_id": parent,
+                       "offline_completion": True}
+                      for parent in set(work["offline_candidates"].values()))
         targets = {}
-        protected = {settings[key] for key in PROTECTED_KEYS if settings.get(key)}
+        protected = {settings[key] for key in PROTECTED_KEYS if settings.get(key) not in (None, "", "0")}
         # Custom rule destinations must not feed archived originals back into sources.
         from app.persistence.models import Rule
         with self.db.session() as session:
             protected.update(rule.config["archive_cid"] for rule in session.scalars(select(Rule).where(Rule.enabled))
-                             if rule.config.get("archive_cid"))
+                             if rule.config.get("archive_cid") not in (None, "", "0"))
         checked_parents = set(work.get("processed_parents", []))
         decisions = []
         for event in events:
@@ -204,7 +351,7 @@ class CloudMonitor:
             elif matched:
                 targets[parent] = {"cid": parent, "offline_only": False,
                                    "source_id": matched[0].id, "one_shot": True,
-                                   "reason": "生活事件：文件移入或新增"}
+                                   "reason": "监测：生活事件或离线下载完成"}
             elif relevant_offline:
                 for item in relevant_offline:
                     targets[item.target_cid] = {
@@ -215,6 +362,14 @@ class CloudMonitor:
         with self.db.session() as session:
             for cid, payload in targets.items():
                 enqueue(session, "scan-cid:" + cid, "cloud_scan", payload)
+            saved_seen = session.get(Settings, "offline-monitor-seen")
+            seen = dict(saved_seen.value) if saved_seen else {}
+            for key, parent in work["offline_candidates"].items():
+                if parent in checked_parents or parent in protected:
+                    seen[key] = now
+            # Only identifiers and acknowledgment times; no links or filenames.
+            seen = dict(sorted(seen.items(), key=lambda item: item[1])[-10000:])
+            session.merge(Settings(key="offline-monitor-seen", value=seen))
             if remaining:
                 work["processed_parents"] = list(checked_parents)
                 session.merge(Settings(key="life-monitor-pending", value=work))

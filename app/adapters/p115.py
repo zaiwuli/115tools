@@ -199,37 +199,45 @@ class P115Adapter:
         if isinstance(results, list) and any(x.get("state") is False for x in results):
             raise AdapterError("PARTIAL_SUBMISSION_REQUIRES_RECONCILIATION", uncertain=True)
 
-    async def offline_snapshot(self) -> list[OfflineStatus]:
+    async def offline_task_snapshot(self) -> dict:
+        """One bounded, serialized snapshot shared by polling and monitoring."""
         async with self.snapshot_lock:
-            cached = self.cache.get("offline")
+            cached = self.cache.get("offline_tasks")
             if cached and time.monotonic() - cached[0] < 20:
                 self.metrics["cache_hits"] += 1
                 return cached[1]
-            result = []
-            for page in range(1, 101):
+            rows = []
+            complete = False
+            for page in range(1, 4):
+                if page > 1:
+                    await asyncio.sleep(3)
                 response = await self.call(
-                    "clouddownload_task_list", {"page": page, "page_size": 100}
-                )
+                    "clouddownload_task_list", {"page": page, "page_size": 100})
                 data = response.get("tasks", response.get("data", []))
                 if isinstance(data, dict):
                     data = data.get("tasks", data.get("list", []))
                 if not isinstance(data, list):
                     raise AdapterError("INVALID_OFFLINE_LIST")
-                for item in data:
-                    status = int(item.get("status", 0))
-                    state = "success" if status == 2 or str(item.get("percentDone")) == "100" else (
-                        "failed" if status < 0 else "downloading"
-                    )
-                    result.append(OfflineStatus(
-                        str(item.get("info_hash") or item.get("hash") or "").lower(),
-                        str(item.get("url") or ""),
-                        str(item.get("name") or item.get("file_name") or ""),
-                        state,
-                    ))
+                rows.extend({k: item[k] for k in (
+                    "info_hash", "hash", "url", "name", "file_name", "status",
+                    "wp_path_id", "add_time",
+                ) if k in item} for item in data)
                 if page >= int(response.get("page_count") or 1):
-                    self.cache["offline"] = (time.monotonic(), result)
-                    return result
-            raise AdapterError("OFFLINE_PAGE_BUDGET_EXCEEDED")
+                    complete = True
+                    break
+            snapshot = {"rows": rows, "pages": page, "complete": complete}
+            self.cache["offline_tasks"] = (time.monotonic(), snapshot)
+            return snapshot
+
+    async def offline_snapshot(self) -> list[OfflineStatus]:
+        snapshot = await self.offline_task_snapshot()
+        return [OfflineStatus(
+            str(item.get("info_hash") or item.get("hash") or "").lower(),
+            str(item.get("url") or ""),
+            str(item.get("name") or item.get("file_name") or ""),
+            "success" if int(item.get("status", 0)) == 2 else (
+                "failed" if int(item.get("status", 0)) < 0 else "downloading"),
+        ) for item in snapshot["rows"]]
 
     @staticmethod
     def preparation_state(response: dict) -> str:

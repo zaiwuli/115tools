@@ -260,6 +260,13 @@ class ArchiveService:
                         )))
                         if len(sources) > 1:
                             raise ValueError("AMBIGUOUS_CLOUD_SOURCE")
+                        waiting_external = session.scalar(select(Offline).where(
+                            Offline.kind == "external", Offline.target_cid == cid,
+                            Offline.name == file.name, Offline.status.in_(["downloading", "unknown"]),
+                            Offline.stage != "complete",
+                        ))
+                        if waiting_external:
+                            continue
                         self.adopt(session, file, source_id=job.payload.get("source_id") or
                                    (sources[0].id if sources else ""))
             if next_offset is not None or walking:
