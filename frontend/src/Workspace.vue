@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import {
   Activity, Clock3, CheckCircle2, CircleAlert, Download, FileArchive, FileInput,
   Plus, RefreshCw, Search, ArrowUpRight, Trash2, RotateCcw, X, Save, FolderOpen,
-  ShieldCheck, ChevronLeft, ChevronRight, Eye, Send, ListFilter, Settings, KeyRound, ChevronDown, Copy,
+  ShieldCheck, ChevronLeft, ChevronRight, Eye, Send, ListFilter, Settings, KeyRound, ChevronDown, Copy, MoreHorizontal,
 } from 'lucide-vue-next'
 import { api, bytes, date, stageLabel, stateLabel, textLabel, errorLabel, uploadDocument, statusTone as tone } from './api'
 import TaskEvidence from './TaskEvidence.vue'
@@ -82,7 +82,9 @@ const fileOffset = ref(0)
 let detailRequest: AbortController | undefined
 watch(detailOpen, opened => { if (!opened) { detailRequest?.abort(); detailBusy.value = false } })
 onBeforeUnmount(() => detailRequest?.abort())
-async function refreshDetail(mode: 'summary' | 'evidence' | 'older' | 'files' = 'summary') {
+const showTechnicalLogs = ref(false)
+const taskEvents = computed(() => [...(detail.value?.events || [])].reverse())
+async function refreshDetail(mode: 'logs' | 'summary' | 'evidence' | 'older' | 'files' = 'summary') {
   if (!detail.value?.id || detailBusy.value) return
   const id = detail.value.id
   const controller = new AbortController()
@@ -93,7 +95,7 @@ async function refreshDetail(mode: 'summary' | 'evidence' | 'older' | 'files' = 
   try {
     const result = await api('/api/v1/tasks/' + id + (mode === 'summary'
       ? '?summary=true' : '?event_limit=50&before_event=' + (cursor || 0) +
-        '&files=' + (mode !== 'older') + '&file_offset=' + (mode === 'files' ? fileOffset.value + 200 : 0)), undefined, 'GET', controller.signal)
+        '&files=' + (mode === 'evidence' || mode === 'files') + '&file_offset=' + (mode === 'files' ? fileOffset.value + 200 : 0)), undefined, 'GET', controller.signal)
     if (!detailOpen.value || detail.value?.id !== id) return
     const newExecution = detail.value.policy?.execution_generation !== result.policy?.execution_generation
     const output = newExecution ? { ...result.output } : { ...detail.value.output, ...result.output }
@@ -149,7 +151,7 @@ const statistics = computed(() => offlineMode.value ? [
   { label: '离线成功', state: 'success', value: allOfflineItems.value.filter(x => x.status === 'success').length, icon: CheckCircle2, color: 'green' },
 ] : [
   { label: '进行中', state: 'ACTIVE', value: system.status?.totals.active || 0, icon: Activity, color: 'teal' },
-  { label: '等待批准', state: 'WAITING_APPROVAL', value: system.status?.totals.approvals || 0, icon: Clock3, color: 'amber' },
+  { label: '待处理', state: 'ATTENTION', value: system.status?.totals.attention || 0, icon: Clock3, color: 'amber' },
   { label: '处理失败', state: 'FAILED', value: system.status?.totals.failed || 0, icon: CircleAlert, color: 'red' },
   { label: '已完成', state: 'SUCCEEDED', value: system.status?.totals.finished || 0, icon: CheckCircle2, color: 'green' },
 ])
@@ -160,11 +162,12 @@ const offlineItems = computed(() => allOfflineItems.value.filter(task =>
   (!search.value || task.name.toLowerCase().includes(search.value.toLowerCase())) &&
   (!stateFilter.value || (stateFilter.value === 'ACTIVE'
     ? !['success','failed','submit_failed','canceled'].includes(task.status)
+    : stateFilter.value === 'ATTENTION' ? ['failed','submit_failed','unknown','submission_unknown'].includes(task.status) || task.stage === 'discover_review'
     : stateFilter.value === 'FAILURES' ? ['failed','submit_failed'].includes(task.status)
     : task.status === stateFilter.value)),
 ))
 const offlineStateOptions = [
-  { title: '全部状态', value: '' }, { title: '进行中', value: 'ACTIVE' },
+  { title: '全部状态', value: '' }, { title: '待处理（核对 / 失败）', value: 'ATTENTION' }, { title: '进行中', value: 'ACTIVE' },
   { title: '等待提交', value: 'queued' }, { title: '提交中', value: 'submitting' },
   { title: '已提交', value: 'submitted' }, { title: '下载中', value: 'downloading' },
   { title: '离线成功', value: 'success' }, { title: '离线失败 / 提交失败', value: 'FAILURES' },
@@ -173,7 +176,7 @@ const offlineStateOptions = [
 ]
 const progressTasks = computed(() => (system.status?.tasks || []).slice(0, 8))
 const stateOptions = [
-  { title: '全部状态', value: '' }, { title: '等待处理', value: 'READY' },
+  { title: '全部状态', value: '' }, { title: '待处理（密码 / 核对 / 失败）', value: 'ATTENTION' }, { title: '排队中', value: 'READY' },
   { title: '进行中（所有未结束任务）', value: 'ACTIVE' },
   { title: '处理中', value: 'RUNNING' }, { title: '等待远端', value: 'WAITING_EXTERNAL' },
   { title: '等待批准', value: 'WAITING_APPROVAL' }, { title: '等待重试', value: 'WAITING_RETRY' },
@@ -210,7 +213,9 @@ async function load(silent = false) {
   finally { if (current()) loading.value = false }
 }
 async function action(endpoint: string, body: unknown = {}, success = '操作已提交') {
+  if (loading.value) return false
   loading.value = true
+  error.value = ''
   try {
     await api(endpoint, body)
     message.value = success
@@ -252,7 +257,8 @@ async function showTask(task: any) {
   fileOffset.value = 0
   detail.value = { ...task, output: { ...task.output }, events: [], steps: [] }
   detailOpen.value = true
-  await refreshDetail()
+  showTechnicalLogs.value = false
+  await refreshDetail('logs')
 }
 async function saveSource() {
   const value = newSource.value
@@ -305,7 +311,7 @@ async function saveSettings() {
   error.value = ''
   const values: any = {}
   for (const key of ['default_home', 'cache_auto_cleanup', 'local_max_extract_bytes', 'local_max_extract_files', 'local_reserve_bytes', 'allowed_download_hosts', 'local_extract_concurrency', 'life_monitor_enabled', 'cloud_extract_by_date', 'cloud_retry_seconds',
-    'cloud_cooldown_seconds', 'cloud_extract_timeout_seconds', 'offline_fallback_seconds', 'notification_offline',
+    'cloud_timeout_check_enabled', 'cloud_timeout_check_delay_seconds', 'cloud_timeout_check_interval_seconds', 'cloud_timeout_check_limit', 'cloud_cooldown_seconds', 'cloud_extract_timeout_seconds', 'offline_fallback_seconds', 'notification_offline',
     'notification_cloud', 'notification_local', 'notification_webhook',
     'notification_enabled', 'notification_provider', 'notification_template',
     'notification_discovery', 'notification_cache', 'notification_extract',
@@ -400,8 +406,12 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
               <button v-if="task.stage === 'cloud_password'" title="重试密码" aria-label="重试密码" @click="action('/api/v1/tasks/' + task.id + '/commands', { action: 'approve' })"><CheckCircle2 :size="17" /></button>
               <button v-if="task.can_download_local || task.can_fallback" title="下载到本地解压" aria-label="下载到本地解压" @click="confirmation = { title: '确认下载原包到运行115tools的设备并本地解压？将占用本地存储和下载流量。成功后按原规则处理云端原包；原云操作未结束时暂缓处理。', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'download_local', expected_version: task.version } }"><Download :size="17" /></button>
               <button v-if="task.output.postprocess_result === 'FAILED'" :title="task.output.cleanup_result === 'FAILED' ? '重试清理' : '重试后处理'" aria-label="重试后处理" @click="action('/api/v1/tasks/' + task.id + '/postprocess/retry')"><RotateCcw :size="17" /></button>
-              <button v-if="!['SUCCEEDED', 'FAILED', 'CANCELED', 'SKIPPED'].includes(task.state)" title="请求取消" aria-label="请求取消任务" @click="confirmation = { title: '请求取消此任务？', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'cancel' } }"><X :size="17" /></button>
-              <button v-if="['SUCCEEDED', 'FAILED', 'CANCELED', 'SKIPPED'].includes(task.state)" title="删除任务" aria-label="删除任务记录" @click="confirmation = { title: '彻底删除此任务及去重记录？原包和解压结果保留，下次发现可能重新解压。', endpoint: '/api/v1/tasks/' + task.id, method: 'DELETE' }"><Trash2 :size="17" /></button>
+              <v-menu><template #activator="{ props: menuProps }"><button v-bind="menuProps" title="更多操作" aria-label="更多操作"><MoreHorizontal :size="17" /></button></template>
+                <v-list density="compact">
+                  <v-list-item v-if="!['SUCCEEDED','FAILED','CANCELED','SKIPPED'].includes(task.state)" title="请求取消" @click="confirmation = { title: '请求取消此任务？', endpoint: '/api/v1/tasks/' + task.id + '/commands', body: { action: 'cancel' } }" />
+                  <v-list-item v-else title="删除任务记录" @click="confirmation = { title: '删除本工具的任务记录？原包和解压结果保留，下次发现可能重新解压。', endpoint: '/api/v1/tasks/' + task.id, method: 'DELETE' }" />
+                </v-list>
+              </v-menu>
               </template>
             </div></td>
           </tr>
@@ -465,7 +475,7 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
       <section v-if="settingsSection === 'status'" class="settings-section"><h2>界面刷新</h2><v-switch :model-value="system.autoRefresh" label="自动刷新页面数据" color="primary" hide-details @update:model-value="system.setAutoRefresh(!!$event)" /></section>
       <section v-if="settingsSection === 'cloud'" class="settings-section"><h2>115 云根目录</h2><div class="form-grid"><v-text-field v-model="settings.cloud_root_cid" label="根目录 CID" /><v-btn :disabled="loading || !settings.cloud_root_cid" color="primary" @click="action('/api/v1/cloud/root', { cid: settings.cloud_root_cid }, '云目录已初始化')"><FolderOpen :size="17" class="mr-2" />初始化目录</v-btn></div><div class="form-grid"><v-text-field :model-value="settings.offline_root_cid" label="离线目录 CID" readonly /><v-text-field :model-value="settings.cloud_output_cid" label="解压目录 CID" readonly /><v-text-field :model-value="settings.cloud_archive_cid" label="归档目录 CID" readonly /><v-text-field :model-value="settings.cloud_failed_cid" label="失败目录 CID" readonly /></div><v-switch v-model="settings.cloud_extract_by_date" label="云解压输出按日期建目录" color="primary" hide-details /></section>
       <section v-if="settingsSection === 'cloud'" class="settings-section"><h2>云目录监测</h2><div class="import-actions"><v-switch v-model="settings.life_monitor_enabled" label="启用生活事件监测（每30分钟）" color="primary" hide-details /><v-btn variant="outlined" to="/sources"><FolderOpen :size="17" class="mr-2" />监测目录管理</v-btn></div></section>
-      <section v-if="settingsSection === 'scheduler'" class="settings-section"><h2>调度节奏</h2><div class="form-grid"><v-select v-model="settings.local_extract_concurrency" :items="[1, 2, 3, 4]" label="本地同时解压数量" /><v-text-field v-model.number="settings.cloud_extract_timeout_seconds" type="number" min="15" max="86400" label="云处理最长时间 / 秒（含重试）" /><v-text-field v-model.number="settings.cloud_retry_seconds" type="number" min="15" label="云解压重试间隔 / 秒" /><v-text-field v-model.number="settings.cloud_cooldown_seconds" type="number" min="15" label="成功冷却 / 秒" /><v-text-field v-model.number="settings.offline_fallback_seconds" type="number" min="15" label="离线兜底查询 / 秒" /></div></section>
+      <section v-if="settingsSection === 'scheduler'" class="settings-section"><h2>调度节奏</h2><div class="form-grid"><v-select v-model="settings.local_extract_concurrency" :items="[1, 2, 3, 4]" label="本地同时解压数量" /><v-text-field v-model.number="settings.cloud_extract_timeout_seconds" type="number" min="15" max="86400" label="云处理最长时间 / 秒（含重试）" /><v-text-field v-model.number="settings.cloud_retry_seconds" type="number" min="15" label="云解压重试间隔 / 秒" /><v-text-field v-model.number="settings.cloud_cooldown_seconds" type="number" min="15" label="成功冷却 / 秒" /><v-text-field v-model.number="settings.offline_fallback_seconds" type="number" min="15" label="离线兜底查询 / 秒" /></div><details class="mt-4"><summary>超时后核对</summary><v-switch v-model="settings.cloud_timeout_check_enabled" label="启用超时后核对（仅对之后超时的任务生效）" /><p class="muted">只查询已有远端操作，不重新提交解压。网络失败也消耗次数，登录或限流异常停止核对。</p><div class="form-grid"><v-text-field v-model.number="settings.cloud_timeout_check_delay_seconds" type="number" min="900" max="86400" label="首次核对延迟 / 秒（至少900）" /><v-text-field v-model.number="settings.cloud_timeout_check_interval_seconds" type="number" min="900" max="86400" label="核对间隔 / 秒（至少900）" /><v-select v-model="settings.cloud_timeout_check_limit" :items="[1,2,3]" label="最多核对次数" /></div></details></section>
       <section v-if="settingsSection === 'scheduler'" class="settings-section"><h2>本地解压</h2><div class="form-grid"><v-switch :model-value="settings.local_max_extract_bytes === 0" label="不限制本地解压输出总量" color="primary" @update:model-value="settings.local_max_extract_bytes = $event ? 0 : 20 * 1024**3" /><v-text-field v-if="settings.local_max_extract_bytes !== 0" v-model.number="localLimitGiB" type="number" min="0.01" step="1" label="输出总量上限 / GiB" /><v-text-field v-model.number="settings.local_max_extract_files" type="number" min="1" label="文件数量上限" /><v-text-field v-model.number="localReserveGiB" type="number" min="0" step="1" label="输出盘预留空间 / GiB" /></div></section>
       <section v-if="settingsSection === 'downloads'" class="settings-section"><h2>允许的下载域名</h2><div class="import-actions"><v-text-field v-model="downloadHost" label="域名或子域名范围（.115cdn.net）" @keydown.enter.prevent="addDownloadHost" /><v-btn icon variant="outlined" title="添加域名" aria-label="添加域名" :disabled="!downloadHost.trim()" @click="addDownloadHost"><Plus :size="18" /></v-btn></div><div v-for="(host, index) in settings.allowed_download_hosts || []" :key="host" class="event-line"><span class="path-cell">{{ host }}</span><v-btn icon variant="text" title="删除域名" aria-label="删除域名" @click="settings.allowed_download_hosts.splice(index, 1)"><Trash2 :size="17" /></v-btn></div></section>
       <section v-if="settingsSection === 'notifications'" class="settings-section notification-form"><h2>通知服务</h2>
@@ -508,10 +518,12 @@ watch(search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => 
         <div v-if="detailError" role="alert" class="error-text">{{ detailError }}<v-btn variant="text" :disabled="detailBusy" @click="refreshDetail()"><RotateCcw :size="16" class="mr-2" />重新加载</v-btn></div>
         <dl class="health-list"><div><dt>状态</dt><dd>{{ stateLabel(detail.state) }}</dd></div><div><dt>阶段</dt><dd>{{ stageLabel(detail.stage) }}</dd></div><div><dt>来源</dt><dd>{{ stateLabel(detail.source) }}</dd></div><div><dt>文件大小</dt><dd>{{ bytes(detail.size) }}</dd></div><div><dt>业务尝试</dt><dd>{{ detail.attempts }}</dd></div><div><dt>输出</dt><dd class="path-cell">{{ detail.output.path || detail.output.cid || '-' }}</dd></div><div v-if="detail.error"><dt>错误</dt><dd>{{ errorLabel(detail.error) }}</dd></div></dl>
         <TaskEvidence :task="detail" />
-        <v-btn class="mt-5" variant="outlined" :disabled="detailBusy" @click="refreshDetail('evidence')"><Eye :size="16" class="mr-2" />查看日志与文件清单</v-btn>
+        <v-btn class="mt-5" variant="outlined" :disabled="detailBusy" @click="refreshDetail('evidence')"><Eye :size="16" class="mr-2" />查看文件清单</v-btn>
         <v-btn v-if="detail.files_more" :disabled="detailBusy" variant="text" @click="refreshDetail('files')">加载更多文件</v-btn>
-        <h3 v-if="detail.events?.length" class="mt-5 mb-3">任务时间线</h3>
-        <div v-for="event in detail.events" :key="event.id" class="timeline-row"><span class="event-dot" /><div><strong>{{ stageLabel(event.stage) }}</strong><p>{{ textLabel(event.message) }}</p><small>{{ date(event.created_at) }}</small></div></div>
+        <div class="section-heading mt-5"><h3>本任务日志</h3><v-btn size="small" variant="text" :disabled="detailBusy" @click="refreshDetail('logs')">刷新日志</v-btn></div>
+        <v-switch v-model="showTechnicalLogs" label="显示技术详情" density="compact" hide-details />
+        <p v-if="!taskEvents.length && !detailBusy" class="muted">暂无任务日志</p>
+        <div v-for="event in taskEvents" :key="event.id" class="timeline-row"><span class="event-dot" /><div><strong>{{ stageLabel(event.stage) }} · {{ stateLabel(event.kind) }}</strong><p>{{ textLabel(event.message) }}</p><small>{{ date(event.created_at) }}</small><details v-if="showTechnicalLogs"><summary>技术详情</summary><code>{{ event.kind }} · {{ event.stage }} · #{{ event.id }}</code><p class="path-cell">{{ event.message }}</p></details></div></div>
         <v-btn v-if="detail.events_more" :disabled="detailBusy" variant="text" @click="refreshDetail('older')">加载更早日志</v-btn>
       </v-card-text>
     </v-card></v-dialog>

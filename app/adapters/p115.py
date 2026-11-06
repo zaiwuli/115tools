@@ -97,10 +97,14 @@ class P115Adapter:
             await asyncio.sleep(max(0, self.next_request - time.monotonic()))
             self.next_request = time.monotonic() + 1
             try:
+                from app.scheduler.request_budget import consume
+                consume()
                 self.metrics["requests"] += 1
                 response = await asyncio.wait_for(
                     getattr(self.client, name)(*args, async_=True, **kwargs), self.timeout
                 )
+            except AdapterError:
+                raise
             except asyncio.CancelledError:
                 raise
             except Exception:

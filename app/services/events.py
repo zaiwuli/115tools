@@ -64,6 +64,8 @@ def transition(session, task, state: str, stage: str, *, error: str = "", manual
     if task.state == state and task.stage == stage and task.error == error:
         return
     prior_stage = task.stage
+    if prior_stage != stage:
+        task.policy = task.policy | {"stage_started_at": time.time()}
     task.state, task.stage, task.error, task.updated_at = state, stage, error, time.time()
     track_step(session, task, prior_stage, state, stage, error)
     if state in {"SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"}:

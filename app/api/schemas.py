@@ -25,5 +25,5 @@ class SourceRequest(StrictModel):
 
 
 class TaskCommand(StrictModel):
-    action: Literal["cancel", "retry", "approve", "hide", "download_local", "repeat_local", "retry_cloud"]
+    action: Literal["cancel", "retry", "approve", "hide", "download_local", "repeat_local", "retry_cloud", "timeout_check_now", "timeout_check_stop"]
     expected_version: int | None = None

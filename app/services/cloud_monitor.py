@@ -44,6 +44,8 @@ class CloudMonitor:
         if not settings["life_monitor_enabled"]:
             return
         saved = session.get(Settings, "life-monitor-state")
+        if saved and saved.value.get("paused"):
+            return
         if saved is None or saved.value.get("next", 0) <= now:
             enqueue(session, "life-monitor", "life_monitor", {})
 

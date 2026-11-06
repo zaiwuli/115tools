@@ -159,8 +159,31 @@ class OfflineService:
                     DateFolder.root_cid == root, DateFolder.target_date == date,
                     DateFolder.account_id == "115-main",
                 ))
-                if cached:
-                    return cached.cid
+                cached_cid = cached.cid if cached else None
+            if cached_cid and not hasattr(self.adapter, "directory_path"):
+                return cached_cid
+            if cached_cid:
+                try:
+                    path = await self.adapter.directory_path(cached_cid)
+                    if len(path) >= 2 and path[-2:] == [root, cached_cid]:
+                        return cached_cid
+                except AdapterError as exc:
+                    if exc.code != "CID_NOT_VERIFIED":
+                        raise
+                # Re-resolve only this date under the configured parent. Never
+                # redirect historical downloads or scan a silently returned root.
+                with self.db.session() as session:
+                    old = session.scalar(select(DateFolder).where(
+                        DateFolder.root_cid == root, DateFolder.target_date == date,
+                        DateFolder.account_id == "115-main",
+                    ))
+                    if old:
+                        session.delete(old)
+                    operation = session.get(Operation, f"date-folder:115-main:{root}:{date}")
+                    if operation:
+                        session.delete(operation)
+                    record(session, root, "DATE_FOLDER_REVALIDATED", "offline_submit",
+                           f"日期目录 {date} 的旧 CID 已失效或移动，重新解析目标目录")
             from app.services.folders import durable_folder
             cid = await durable_folder(self.db, self.adapter, root, date,
                                        f"date-folder:115-main:{root}:{date}")

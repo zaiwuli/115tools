@@ -57,6 +57,16 @@ def expire_cloud(session, task):
     transition(session, task, "WAITING_APPROVAL", "local_fallback",
                error="CLOUD_PROCESSING_TIMEOUT")
     task.wait_reason = "APPROVAL"
+    settings = session.get(Settings, "cloud_timeout_check_enabled")
+    if settings and settings.value.get("value") and task.remote_id:
+        delay = session.get(Settings, "cloud_timeout_check_delay_seconds")
+        limit = session.get(Settings, "cloud_timeout_check_limit")
+        import time
+        task.policy = task.policy | {"timeout_check": {
+            "state": "scheduled", "used": 0, "limit": limit.value["value"] if limit else 2,
+            "due": time.time() + (delay.value["value"] if delay else 900),
+            "remote_id": task.remote_id,
+        }}
     active = session.get(Settings, "cloud_active")
     if active and active.value.get("value") == task.id:
         active.value = {"value": ""}
@@ -88,6 +98,8 @@ def start_local(session, task):
     )):
         operation.status = "ABANDONED"
     task.policy = task.policy | {"fallback_approved": True}
+    if task.policy.get("timeout_check"):
+        task.policy = task.policy | {"timeout_check": task.policy["timeout_check"] | {"state": "stopped"}}
     if unsettled:
         task.policy = task.policy | {
             "cloud_remote_unsettled": True,
@@ -116,7 +128,7 @@ def approve_automatic(session, task):
     record(session, task.id, "FALLBACK_AUTHORIZED", "cache", "按处理规则批准下载原包并本地解压")
 
 
-def cloud_retry_status(task):
+def cloud_retry_status(task, session=None):
     from app.services.archives import is_archive
     success = task.policy.get("cloud_succeeded") or task.output.get("verification") in {"remote_manifest", "remote_reported_complete", "remote_completed_and_visible"}
     visible = bool(task.source == "115" and is_archive(task.name) and not success)
@@ -129,4 +141,15 @@ def cloud_retry_status(task):
         reason = "请先核对内容身份冲突"
     elif task.output.get("failure_archive_result") in {"PENDING", "FAILED"}:
         reason = "请先核对原包归档位置"
+    if visible and not reason and session is not None:
+        from app.persistence.models import Job
+        if session.scalar(select(Job.id).where(
+            Job.payload["task_id"].as_string() == task.id,
+            Job.state.in_(["RUNNING", "LEASED", "READY", "RECONCILING"]),
+        )):
+            reason = "关联处理尚未结束，请稍后重试"
+        elif session.scalar(select(Operation).where(
+            Operation.task_id == task.id, Operation.status.in_(["PREPARED", "UNKNOWN"]),
+        )):
+            reason = "请先核对上一次操作结果"
     return {"cloud_retry_visible": visible, "can_retry_cloud": visible and not reason, "cloud_retry_reason": reason}

@@ -6,11 +6,26 @@ from app.persistence.models import Job
 
 
 def enqueue(session, key: str, kind: str, payload: dict, due: float | None = None) -> Job:
+    payload = dict(payload)
+    manual_reset = payload.pop("manual_reset_budget", False)
     due = time.time() if due is None else due
     existing = session.scalar(select(Job).where(Job.key == key))
     if existing:
+        if existing.payload.get("budget_exhausted") and not manual_reset:
+            return existing
+        if manual_reset and existing.state not in {"RUNNING", "LEASED", "RECONCILING"}:
+            existing.payload = {k: v for k, v in existing.payload.items()
+                                if k not in {"remote_requests", "remote_request_limit", "budget_exhausted", "consecutive_failures"}}
+        if existing.state == "SUCCEEDED" and kind in {"life_monitor", "offline_poll", "postprocess"}:
+            existing.payload = {k: v for k, v in existing.payload.items()
+                                if k not in {"remote_requests", "remote_request_limit"}}
+        payload = {k: v for k, v in existing.payload.items() if k in {
+            "remote_requests", "remote_request_limit", "consecutive_failures", "budget_exhausted",
+        }} | payload
         if kind == "cloud_scan":
             merged = existing.payload | payload
+            if existing.state == "FAILED" and existing.error in {"CID_NOT_VERIFIED", "DISCOVERY_BUDGET_REQUIRES_REVIEW"} and not manual_reset:
+                return existing
             if existing.state == "FAILED":
                 merged.update({"scan_validation_failures": 0, "walk": [], "candidates": [], "offset": 0})
             if "offline_ids" in existing.payload and "offline_ids" in payload:

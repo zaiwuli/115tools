@@ -7,6 +7,9 @@ const updates = ref<any>(null)
 const busy = ref(false)
 const error = ref('')
 const installed = ref<any>(null)
+const metrics = ref<any>(null)
+async function loadMetrics() { metrics.value = await api('/api/v1/system/metrics') }
+function mib(value: any) { return typeof value === 'number' ? (value / 1024 ** 2).toFixed(1) + ' MiB' : '不可用' }
 async function componentAction(action: string, component?: string) {
   busy.value = true; error.value = ''
   try {
@@ -44,7 +47,7 @@ const sevenUpdateLabel = computed(() => {
   return '最新'
 })
 async function loadUpdates() { updates.value = await api('/api/v1/system/component-updates') }
-onMounted(() => { loadUpdates().catch(() => {}); api('/api/v1/system/components').then(value => { installed.value = value }).catch(() => {}) })
+onMounted(() => { loadMetrics().catch(() => {}); loadUpdates().catch(() => {}); api('/api/v1/system/components').then(value => { installed.value = value }).catch(() => {}) })
 async function checkUpdates() {
   busy.value = true; error.value = ''
   try { await api('/api/v1/system/component-updates/check', {}); await loadUpdates() }
@@ -60,7 +63,12 @@ async function toggleChecks() {
 <template>
   <section class="settings-section">
     <h2>运行状态</h2>
+    <div class="import-actions"><v-btn size="small" variant="text" @click="loadMetrics().catch(() => {})">刷新内存状态</v-btn></div>
     <dl class="health-list">
+      <div><dt>进程内存 RSS</dt><dd>{{ mib(metrics?.memory?.process?.rss_bytes) }}</dd></div>
+      <div><dt>容器工作集</dt><dd>{{ mib(metrics?.memory?.container?.working_set_bytes) }}</dd></div>
+      <div><dt>容器文件缓存</dt><dd>{{ mib(metrics?.memory?.container?.file_cache_bytes) }}</dd></div>
+      <div><dt>执行 / 排队任务</dt><dd>{{ metrics ? metrics.active_jobs + ' / ' + metrics.ready_jobs : '加载中' }}</dd></div>
       <div><dt>调度状态</dt><dd>{{ system.status?.paused ? '已暂停' : '运行中' }}</dd></div>
       <div><dt>115 连接</dt><dd>{{ system.status?.adapter === 'disabled' ? '未配置' : system.status?.adapter === 'fake' ? '测试模式' : '已配置' }}</dd></div>
       <div><dt>p115 安装状态</dt><dd>{{ system.status?.p115_component?.installed ? '已安装' : '未安装' }}</dd></div>

@@ -37,8 +37,20 @@ async function command(suffix: string, extra: any = {}) {
 </script>
 
 <template>
+  <section v-if="task.policy.timeout_check" class="task-evidence">
+    <h3>超时后核对</h3>
+    <p>已查询 {{ task.policy.timeout_check.used }} / {{ task.policy.timeout_check.limit }} 次 · {{ task.policy.timeout_check.state === 'scheduled' ? '下次：' + date(task.policy.timeout_check.due) : '自动核对已结束' }}</p>
+    <div v-if="task.policy.timeout_check.state === 'scheduled' && system.status?.role !== 'readonly'" class="row-actions"><button :disabled="busy" title="立即核对（计入次数上限）" aria-label="立即核对" @click="command('/commands', { action: 'timeout_check_now' })"><RotateCcw :size="16" /></button><button :disabled="busy" title="停止自动核对" aria-label="停止自动核对" @click="command('/commands', { action: 'timeout_check_stop' })"><Trash2 :size="16" /></button></div>
+  </section>
+  <section v-if="task.query_budget || task.cloud_elapsed_seconds != null" class="task-evidence">
+    <h3>云处理状态</h3>
+    <p v-if="task.cloud_elapsed_seconds != null">累计耗时 {{ Math.floor(task.cloud_elapsed_seconds / 60) }} 分 {{ Math.floor(task.cloud_elapsed_seconds % 60) }} 秒</p>
+    <p v-if="task.query_budget">本轮网盘请求 {{ task.query_budget.used }} / {{ task.query_budget.limit }}<span v-if="task.query_budget.exhausted"> · 已达上限，自动查询已停止</span></p>
+    <p v-if="task.policy.last_failure_type">最近异常：{{ ({ AUTH: '登录或验证异常', RATE_LIMIT: '请求限流', NETWORK: '网络异常', UNKNOWN: '远端异常' } as any)[task.policy.last_failure_type] || task.policy.last_failure_type }}</p>
+  </section>
   <div v-if="task.cloud_retry_visible && system.status?.role !== 'readonly'" class="row-actions">
     <button style="width:30px;height:30px" :disabled="busy || !task.can_retry_cloud" :title="task.cloud_retry_reason || '重试云解压'" aria-label="重试云解压" @click="command('/commands', { action: 'retry_cloud' })"><RotateCcw :size="16" /></button>
+    <small>{{ task.cloud_retry_reason || '可重新发起云解压，保留已有密码和规则' }}</small>
   </div>
   <section v-if="task.can_repeat_local || task.local_executions?.length || task.policy?.manual_local_parent" class="task-evidence">
     <h3>手动本地处理</h3>

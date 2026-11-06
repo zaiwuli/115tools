@@ -84,6 +84,8 @@ class Engine:
             return
         now = time.time()
         with self.db.session() as session:
+            from app.services.timeout_check import schedule
+            schedule(session, self.db.settings(), now)
             active = session.get(Settings, "cloud_active")
             task = session.get(Task, active.value.get("value")) if active and active.value.get("value") else None
             if task and task.stage.startswith("cloud_") and task.state not in {
@@ -130,8 +132,11 @@ class Engine:
     async def execute(self, job):
         heartbeat = asyncio.create_task(self.heartbeat(job))
         work = None
+        from app.scheduler.request_budget import current_budget, LIMITS
+        budget_token = current_budget.set((self.db, job.id, LIMITS.get(job.kind, 200)))
         try:
             handler = {
+                "cloud_timeout_check": self.timeout_check,
                 "life_monitor": self.monitor.run,
                 "offline_submit": self.offline.submit_job,
                 "offline_poll": self.poll_job,
@@ -154,6 +159,9 @@ class Engine:
             if heartbeat in done:
                 await heartbeat
             due = await work
+            with self.db.session() as session:
+                current = self.store.owned(session, job)
+                current.payload = current.payload | {"consecutive_failures": 0}
             self.store.finish(job, due=due)
         except asyncio.CancelledError:
             raise
@@ -177,14 +185,33 @@ class Engine:
                        f"调度任务失败；错误代码 {code[:100]}；异常类型 {type(exc).__name__}" +
                        (f"；目标 CID {job.payload.get('cid', '')}；失败 CID {exc.step or job.payload.get('cid', '')}"
                         if job.kind == "cloud_scan" and isinstance(exc, AdapterError) else ""))
-                if job.kind == "cloud_scan" and code in {"CID_NOT_VERIFIED", "DISCOVERY_BUDGET_REQUIRES_REVIEW"}:
-                    failures = current.payload.get("scan_validation_failures", 0) + 1
-                    current.payload = current.payload | {"scan_validation_failures": failures}
-                    current.state = "FAILED" if failures >= 3 else "READY"
-                    current.due = time.time() + 300
-                    if failures >= 3:
-                        record(session, job.id, "SCAN_REQUIRES_REVIEW", "cloud_scan",
-                               f"目标 CID {job.payload.get('cid', '')}：连续目录校验失败，已停止自动重试，请核对目录后手动刷新")
+                if code == "REMOTE_QUERY_BUDGET_EXHAUSTED":
+                    current.state, current.dirty = "FAILED", False
+                    current.payload = current.payload | {"budget_exhausted": True}
+                    task = session.get(Task, job.payload.get("task_id", ""))
+                    if task and job.kind == "cloud_extract":
+                        task.policy = task.policy | {"query_budget_exhausted": True}
+                        transition(session, task, "WAITING_APPROVAL", task.stage, error=code)
+                        active = session.get(Settings, "cloud_active")
+                        if active and active.value.get("value") == task.id:
+                            active.value = {"value": ""}
+                    record(session, job.id, "QUERY_BUDGET_EXHAUSTED", job.kind,
+                           "网盘请求已达到本轮上限，停止自动请求，等待人工处理")
+                elif job.kind in {"life_monitor", "cloud_scan", "offline_poll", "offline_submit"}:
+                    failures = current.payload.get("consecutive_failures", 0) + 1
+                    stop = failures >= 3 or code in {"LIFE_BACKLOG_REQUIRES_REVIEW", "DISCOVERY_BUDGET_REQUIRES_REVIEW"}
+                    current.payload = current.payload | {"consecutive_failures": failures,
+                                                         "budget_exhausted": stop}
+                    current.state, current.dirty = ("FAILED" if stop else "READY"), False
+                    current.due = time.time() + max(300, min(1800, 300 * failures))
+                    if stop:
+                        record(session, job.id, "QUERY_REQUIRES_REVIEW", job.kind,
+                               "网盘任务连续失败或超过扫描范围，停止自动请求，等待人工处理")
+                elif job.kind == "cloud_timeout_check":
+                    current.state, current.dirty = "FAILED", False
+                    task = session.get(Task, job.payload["task_id"])
+                    if task and task.policy.get("timeout_check"):
+                        task.policy = task.policy | {"timeout_check": task.policy["timeout_check"] | {"state": "stopped", "error": code}}
                 elif job.kind == "local_extract":
                     task = session.get(Task, job.payload["task_id"])
                     if task.cancel_requested:
@@ -222,10 +249,15 @@ class Engine:
                     current.state, current.due = "READY", time.time() + 300
                 current.owner, current.lease_until = "", None
         finally:
+            current_budget.reset(budget_token)
             heartbeat.cancel()
             if work:
                 work.cancel()
             await asyncio.gather(heartbeat, *([work] if work else []), return_exceptions=True)
+
+    async def timeout_check(self, job):
+        from app.services.timeout_check import run
+        return await run(self, job)
 
     async def poll_job(self, job):
         await self.offline.poll(job, manual=job.payload.get("manual", False))
@@ -320,7 +352,7 @@ class Engine:
             # Pausing blocks new workflows but permits remote-operation observation.
             paused = self.db.settings()["paused"]
             all_kinds = [
-                "offline_submit", "offline_poll", "cloud_scan", "cloud_extract",
+                "cloud_timeout_check", "offline_submit", "offline_poll", "cloud_scan", "cloud_extract",
                 "local_scan", "local_extract", "document", "notifications",
                 "postprocess", "cache_gc", "document_copy", "failure_archive",
                 "life_monitor",

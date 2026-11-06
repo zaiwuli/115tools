@@ -491,9 +491,20 @@ class ArchiveService:
                         enqueue(session, "postprocess:" + task_id, "postprocess", {"task_id": task_id})
                 return None
         except AdapterError as exc:
+            if exc.code == "REMOTE_QUERY_BUDGET_EXHAUSTED":
+                raise
             with self.db.session() as session:
                 self.store.owned(session, job)
                 current = session.get(Task, task_id)
+                category = ("AUTH" if "AUTH" in exc.code else "RATE_LIMIT" if exc.code == "REMOTE_RATE_LIMIT"
+                            else "NETWORK" if exc.code == "REMOTE_UNAVAILABLE" else "UNKNOWN")
+                current.policy = current.policy | {"last_failure_type": category,
+                                                   "last_remote_error_code": exc.remote_code}
+                if category == "AUTH":
+                    current.wait_reason = "AUTH"
+                    transition(session, current, "WAITING_APPROVAL", current.stage, error=exc.code)
+                    session.merge(Settings(key="cloud_active", value={"value": ""}))
+                    return None
                 if current.stage in {"cloud_prepare", "cloud_inspect", "cloud_password"} and not current.remote_id:
                     if current.cancel_requested:
                         self.stop_preparation(session, current, "CANCELED")

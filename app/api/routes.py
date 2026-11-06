@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import load_only
 
@@ -33,6 +33,13 @@ secured = APIRouter(dependencies=[Depends(authenticate)])
 
 def serialize(model) -> dict:
     return {column.name: getattr(model, column.name) for column in model.__table__.columns}
+
+
+def attention_condition():
+    return or_(Task.state.in_(["WAITING_APPROVAL", "RECONCILING", "FAILED"]),
+               Task.output["postprocess_result"].as_string() == "FAILED",
+               Task.output["flatten_result"].as_string() == "FAILED",
+               Task.output["cleanup_result"].as_string() == "FAILED")
 
 
 @router.get("/api/auth/status")
@@ -123,6 +130,7 @@ def system_status(request: Request):
         total = session.scalar(select(func.count(Task.id)).where(Task.state == "SUCCEEDED"))
         approvals = session.scalar(select(func.count(Task.id)).where(Task.state == "WAITING_APPROVAL"))
         failures = session.scalar(select(func.count(Task.id)).where(Task.state == "FAILED"))
+        attention = session.scalar(select(func.count(Task.id)).where(~Task.hidden, attention_condition()))
         active = session.scalar(select(func.count(Task.id)).where(
             Task.state.not_in(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"]),
         ))
@@ -139,7 +147,7 @@ def system_status(request: Request):
         "p115_component": p115_info(),
         "updated_at": time.time(), "paused": settings["paused"],
         "totals": {"active": active, "finished": total, "retries": sum(t.attempts for t in tasks),
-                   "workers": 1, "approvals": approvals, "failed": failures},
+                   "workers": 1, "approvals": approvals, "failed": failures, "attention": attention},
         "tasks": [{"id": x.id, "name": x.name, "source": x.source, "state": x.state,
                    "stage": x.stage, "attempts": x.attempts} for x in tasks],
         "logs": [serialize(x) for x in events], "sources": [serialize(x) for x in sources],
@@ -158,7 +166,9 @@ def list_tasks(request: Request, state: str = "", source: str = "", q: str = "",
         query = select(Task).where(~Task.hidden)
         if terminal:
             query = query.where(Task.state.in_(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"]))
-        if state == "ACTIVE":
+        if state == "ATTENTION":
+            query = query.where(attention_condition())
+        elif state == "ACTIVE":
             query = query.where(Task.state.not_in(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"]))
         elif state:
             query = query.where(Task.state == state)
@@ -174,7 +184,7 @@ def list_tasks(request: Request, state: str = "", source: str = "", q: str = "",
         for task in items:
             transfer = session.get(Transfer, task.id)
             rows.append(serialize(task) | {
-                **cloud_retry_status(task),
+                **cloud_retry_status(task, session),
                 "can_fallback": can_fallback(task),
                 "can_download_local": can_download_local(task),
                 "transfer": serialize(transfer) if transfer else None,
@@ -192,7 +202,7 @@ def task_detail(request: Request, task_id: str, summary: bool = False,
             raise HTTPException(404, detail="TASK_NOT_FOUND")
         result = serialize(task)
         from app.services.fallback import can_fallback, can_download_local
-        result.update(cloud_retry_status(task))
+        result.update(cloud_retry_status(task, session))
         result["can_fallback"] = can_fallback(task)
         result["can_download_local"] = can_download_local(task)
         from app.services.fallback import can_repeat_local
@@ -225,6 +235,12 @@ def task_detail(request: Request, task_id: str, summary: bool = False,
             result["files_more"] = any(count > offset + 200 for count in counts.values())
         transfer = session.get(Transfer, task_id)
         result["transfer"] = serialize(transfer) if transfer else None
+        cloud_job = session.scalar(select(Job).where(Job.key == "archive:" + task_id))
+        result["query_budget"] = ({"used": cloud_job.payload.get("remote_requests", 0),
+                                   "limit": cloud_job.payload.get("remote_request_limit", 60),
+                                   "exhausted": cloud_job.payload.get("budget_exhausted", False)}
+                                  if cloud_job else None)
+        result["cloud_elapsed_seconds"] = max(0, (task.completed_at or time.time()) - task.policy["cloud_started_at"]) if task.policy.get("cloud_started_at") else None
         if summary:
             return result
         query = select(Event).where(Event.task_id == task_id)
@@ -328,9 +344,22 @@ def task_command(request, task_id, action, expected_version=None):
                 job.state, job.dirty = "SUCCEEDED", False
             from app.services.fallback import start_local
             start_local(session, task)
+        elif action in {"timeout_check_now", "timeout_check_stop"}:
+            check = task.policy.get("timeout_check", {})
+            if check.get("state") != "scheduled":
+                raise HTTPException(409, detail="没有计划中的超时核对")
+            if action == "timeout_check_stop":
+                task.policy = task.policy | {"timeout_check": check | {"state": "stopped"}}
+            else:
+                if check["used"] >= check["limit"]:
+                    raise HTTPException(409, detail="核对次数已用尽")
+                if session.scalar(select(Job.id).where(Job.key == "timeout-check:" + task.id, Job.state.in_(["RUNNING", "LEASED"]))):
+                    raise HTTPException(409, detail="TASK_OPERATIONS_PENDING")
+                task.policy = task.policy | {"timeout_check": check | {"due": time.time()}}
+                enqueue(session, "timeout-check:" + task.id, "cloud_timeout_check", {"task_id": task.id})
         elif action == "retry_cloud":
             from app.services.execution import begin_execution
-            status = cloud_retry_status(task)
+            status = cloud_retry_status(task, session)
             if not status["can_retry_cloud"]:
                 raise HTTPException(409, detail=status["cloud_retry_reason"] or "云解压重试不可用")
             if session.scalar(select(Job.id).where(
@@ -344,7 +373,7 @@ def task_command(request, task_id, action, expected_version=None):
                 raise HTTPException(409, detail="请先核对上一次操作结果")
             begin_execution(session, task)
             task.policy = {k: v for k, v in task.policy.items() if k not in {
-                "fallback_approved", "cloud_started_at", "cloud_remote_unsettled", "previous_cloud_remote_id",
+                "fallback_approved", "cloud_started_at", "cloud_remote_unsettled", "previous_cloud_remote_id", "query_budget_exhausted", "timeout_check",
             }}
             task.policy = task.policy | {"auto_extract": True}
             task.state, task.stage, task.error = "READY", "cloud_prepare", ""
@@ -355,7 +384,7 @@ def task_command(request, task_id, action, expected_version=None):
             identity = session.get(Identity, task.content_key)
             if identity:
                 session.delete(identity)
-            enqueue(session, "archive:" + task.id, "cloud_extract", {"task_id": task.id})
+            enqueue(session, "archive:" + task.id, "cloud_extract", {"task_id": task.id, "manual_reset_budget": True})
             record(session, task.id, "MANUAL_CLOUD_RETRY", "cloud_prepare", "已加入云解压重试队列")
             import logging
             logging.getLogger("115work").info("已加入云解压重试队列：%s", task.name)
@@ -584,6 +613,13 @@ def rediscover_offline(request: Request, task_id: str):
         item = session.get(Offline, task_id)
         if not item or item.status != "success" or item.stage != "discover_review":
             raise HTTPException(409, detail="DISCOVERY_REVIEW_REQUIRED")
+        existing_scan = session.scalar(select(Job).where(Job.key == "scan-cid:" + item.target_cid))
+        if existing_scan and existing_scan.state in {"RUNNING", "LEASED", "RECONCILING"}:
+            raise HTTPException(409, detail="TASK_OPERATIONS_PENDING")
+        enqueue(session, "scan-cid:" + item.target_cid, "cloud_scan", {
+            "cid": item.target_cid, "offline_only": True, "offline_ids": [item.id],
+            "one_shot": True, "manual_reset_budget": True, "reason": "手动重新扫描产物",
+        })
         item.stage, item.error = "discover", ""
         session.merge(Settings(key="discovery-success:" + item.id,
                                value={"rounds": 1, "due": time.time(), "observed_at": time.time()}))
@@ -631,14 +667,14 @@ def refresh_sources(request: Request):
                 "source_id": source.id,
             }
             if kind == "cloud_scan":
-                payload.update({"source_id": source.id, "one_shot": True, "reason": "手动刷新监测来源"})
+                payload.update({"source_id": source.id, "one_shot": True, "manual_reset_budget": True, "reason": "手动刷新监测来源"})
             key = "scan-cid:" + payload["cid"] if kind == "cloud_scan" else "scan-source:" + source.id
             enqueue(session, key, kind, payload)
         for cid in set(session.scalars(select(Offline.target_cid).where(
             Offline.target_cid != "", Offline.status.not_in(["failed", "submit_failed", "canceled"]),
         ))):
             enqueue(session, "scan-cid:" + cid, "cloud_scan", {
-                "cid": cid, "offline_only": True, "one_shot": True, "reason": "手动刷新离线目录",
+                "cid": cid, "offline_only": True, "one_shot": True, "manual_reset_budget": True, "reason": "手动刷新离线目录",
             })
     request.app.state.engine.wake.set()
     return {"success": True, "message": "已加入来源扫描队列"}
@@ -697,6 +733,12 @@ async def set_settings(request: Request):
             not value.isdigit() and not (key == "offline_extract_cid" and value == "")
         )):
             raise HTTPException(422, detail="INVALID_CID")
+        if key == "cloud_timeout_check_enabled" and type(value) is not bool:
+            raise HTTPException(422, detail="INVALID_TIMEOUT_CHECK_SETTING")
+        if key == "cloud_timeout_check_limit" and (type(value) is not int or not 1 <= value <= 3):
+            raise HTTPException(422, detail="INVALID_TIMEOUT_CHECK_LIMIT")
+        if key in {"cloud_timeout_check_delay_seconds", "cloud_timeout_check_interval_seconds"} and (type(value) is not int or value < 900):
+            raise HTTPException(422, detail="TIMEOUT_CHECK_MINIMUM_900_SECONDS")
         if key == "cloud_extract_by_date" and type(value) is not bool:
             raise HTTPException(422, detail="INVALID_DATE_SETTING")
         if key == "life_monitor_enabled" and type(value) is not bool:
