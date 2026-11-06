@@ -141,6 +141,7 @@ class Engine:
                 "cloud_timeout_check": self.timeout_check,
                 "life_monitor": self.monitor.run,
                 "offline_release": self.monitor.release,
+                "bark_window": self.bark_window,
                 "offline_submit": self.offline.submit_job,
                 "offline_poll": self.poll_job,
                 "cloud_scan": self.archives.scan,
@@ -262,6 +263,10 @@ class Engine:
         from app.services.timeout_check import run
         return await run(self, job)
 
+    async def bark_window(self, job):
+        from app.services.bark import run
+        return await run(self.db, job)
+
     async def poll_job(self, job):
         await self.offline.poll(job, manual=job.payload.get("manual", False))
         if self.db.settings()["life_monitor_enabled"]:
@@ -360,7 +365,7 @@ class Engine:
                 "cloud_timeout_check", "offline_submit", "offline_poll", "cloud_scan", "cloud_extract",
                 "local_scan", "local_extract", "document", "notifications",
                 "postprocess", "cache_gc", "document_copy", "failure_archive",
-                "life_monitor", "offline_release",
+                "life_monitor", "offline_release", "bark_window",
                 "seed_cleanup",
             ]
             kinds = ["notifications", "cache_gc"] if paused else all_kinds

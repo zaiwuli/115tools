@@ -42,6 +42,51 @@ def attention_condition():
                Task.output["cleanup_result"].as_string() == "FAILED")
 
 
+async def bark_signal(request: Request, device_key: str = "", message_path: str = ""):
+    # Bark clients use either JSON device_key or a key in the URL path.
+    if not device_key:
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(422, detail="BARK_DEVICE_KEY_REQUIRED") from None
+        if not isinstance(body, dict):
+            raise HTTPException(422, detail="BARK_DEVICE_KEY_REQUIRED")
+        device_key = str(body.get("device_key") or "")
+    if not device_key or len(device_key) > 512:
+        raise HTTPException(401, detail="INVALID_TOKEN")
+    headers = [(k,v) for k,v in request.scope["headers"] if k.lower() not in {b"authorization",b"cookie"}]
+    headers.append((b"authorization", ("Bearer "+device_key).encode()))
+    scope = dict(request.scope, headers=headers, method="POST")
+    role = authenticate(Request(scope))
+    if role != "admin":
+        raise HTTPException(403, detail="READ_ONLY_PERMISSION")
+    if not request.app.state.db.settings()["life_monitor_enabled"]:
+        raise HTTPException(409, detail="LIFE_MONITOR_DISABLED")
+    now = time.time()
+    with request.app.state.db.session() as session:
+        window = session.get(Settings,"bark-window")
+        value = dict(window.value) if window else {}
+        if not value or value.get("dispatched") or now >= value["due"]:
+            # An expired pending window is dispatched before opening the next one.
+            if value and not value.get("dispatched"):
+                from app.services.bark import dispatch
+                dispatch(session,value)
+            value = {"start":now,"due":now+90,"count":1,"dispatched":False}
+        else:
+            value["count"] += 1
+        session.merge(Settings(key="bark-window",value=value))
+        enqueue(session,"bark-window","bark_window",{},due=value["due"])
+        if value["count"] == 1:
+            record(session,"system","BARK_SIGNAL","cloud_monitor","收到外部触发信号，90秒后检查云端变化")
+    request.app.state.engine.wake.set()
+    return {"code":200,"message":"success","timestamp":int(now)}
+
+
+router.add_api_route("/bark/push", bark_signal, methods=["POST"], include_in_schema=False)
+router.add_api_route("/bark/{device_key}", bark_signal, methods=["GET","POST"], include_in_schema=False)
+router.add_api_route("/bark/{device_key}/{message_path:path}", bark_signal, methods=["GET","POST"], include_in_schema=False)
+
+
 @router.get("/api/auth/status")
 def auth_status(request: Request):
     logged_in = False

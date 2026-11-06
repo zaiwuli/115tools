@@ -68,7 +68,9 @@ def configure_console_logging():
                 record.levelno = logging.ERROR if int(status) >= 500 else logging.WARNING
                 record.levelname = logging.getLevelName(record.levelno)
                 record.msg = "HTTP %s %s → %s"
-                record.args = (method, str(path).split("?", 1)[0], status)
+                safe_path = str(path).split("?", 1)[0]
+                if safe_path.startswith("/bark/"): safe_path = "/bark/[redacted]"
+                record.args = (method, safe_path, status)
             return True
     for name in ("115work", "uvicorn", "uvicorn.error", "uvicorn.access"):
         logger = logging.getLogger(name)
