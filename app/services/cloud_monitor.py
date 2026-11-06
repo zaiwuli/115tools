@@ -101,16 +101,24 @@ class CloudMonitor:
         with self.db.session() as session:
             protected.update(rule.config["archive_cid"] for rule in session.scalars(select(Rule).where(Rule.enabled))
                              if rule.config.get("archive_cid"))
+        checked_parents = set()
         for event in events:
             if int(event.get("type", 0)) not in {1, 2, 5, 6, 14, 17, 18, 23}:
                 continue
             parent = str(event.get("parent_id") or "")
             if not parent or parent in protected:
                 continue
-            if parent in targets:
+            if parent in checked_parents:
                 continue
+            checked_parents.add(parent)
             # Validate ancestry without downloading a file or opening a web session.
-            path = await self.adapter.directory_path(parent)
+            try:
+                path = await self.adapter.directory_path(parent)
+            except AdapterError as exc:
+                if exc.code != "CID_NOT_VERIFIED":
+                    raise
+                # Deleted/moved historical directories must not block all new events.
+                continue
             ancestors = set(path)
             if ancestors & protected:
                 continue

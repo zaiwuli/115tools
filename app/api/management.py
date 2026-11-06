@@ -546,7 +546,14 @@ def monitor_check(request: Request):
     if not request.app.state.db.settings()["life_monitor_enabled"]:
         raise HTTPException(409, detail="LIFE_MONITOR_DISABLED")
     with request.app.state.db.session() as session:
-        enqueue(session, "life-monitor", "life_monitor", {"manual": True})
+        from app.persistence.models import Job
+        running = session.scalar(select(Job).where(Job.key == "life-monitor"))
+        if running and running.state in {"RUNNING", "LEASED", "RECONCILING"}:
+            raise HTTPException(409, detail="生活事件检查正在进行，请稍后查看结果")
+        saved = session.get(Settings, "life-monitor-state")
+        if saved and saved.value.get("paused"):
+            saved.value = saved.value | {"paused": False}
+        enqueue(session, "life-monitor", "life_monitor", {"manual": True, "manual_reset_budget": True})
     request.app.state.engine.wake.set()
     return {"success": True}
 
