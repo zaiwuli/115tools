@@ -437,7 +437,8 @@ class ArchiveService:
                     output_cid = await output_folder(
                         self.db, self.adapter, root_cid,
                         PurePosixPath(task.name).stem[:80],
-                        f"output-folder:{task_id}:{task.attempts}", task_id,
+                        f"output-folder:{operation_scope(task)}:{task.attempts}",
+                        task_id, retry=True,
                     )
                     with self.db.session() as session:
                         self.store.owned(session, job)
@@ -529,6 +530,8 @@ class ArchiveService:
                     export = session.get(Operation, f"cloud-export:{operation_scope(task)}:{task.attempts}")
                     transition(session, current, "RECONCILING",
                                "cloud_export_unknown" if export else "cloud_output", error=exc.code)
+                    if exc.code == "PRIOR_OUTPUT_REQUIRES_REVIEW":
+                        session.merge(Settings(key="cloud_active", value={"value": ""}))
                     return None
                 if not exc.uncertain and task.stage == "cloud_output" and exc.code == "REMOTE_REJECTED":
                     operation = session.get(Operation, f"cloud-export:{operation_scope(task)}:{task.attempts}")

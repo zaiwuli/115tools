@@ -22,7 +22,7 @@ def match_signal(session, fields):
     match = re.search(r"(?:路径|path)\s*[：:]\s*([^\r\n]+)", text, re.I)
     path = normalize_path(match[1]) if match else ""
     links, _ = extract_links(text)
-    hashes = list({x.hash_value.lower() for x in links if x.hash_value})
+    hashes = sorted({x.hash_value.lower() for x in links if x.hash_value})
     matches = []
     for source in session.scalars(select(Source).where(Source.kind == "115", Source.enabled)):
         prefix = normalize_path(source.config.get("bark_path", "")) if source.config.get("bark_enabled") else ""
@@ -117,12 +117,12 @@ async def check(engine, job):
                    f"来源 {source.name}；相对目录 {signal['relative'] or '/'}；{result}")
             saved = session.get(Settings,"bark-messages")
             if saved:
-                messages = list(saved.value.get("items", []))
-                for message in messages:
-                    if message.get("match",{}).get("path")==signal["path"]:
-                        message = message.setdefault("match",{})
-                        message["result"] = result
-                saved.value = {"items":messages}
+                message_ids = set(signal.get("message_ids", []))
+                saved.value = {"items": [
+                    message | {"match": message.get("match", {}) | {"result": result}}
+                    if message.get("id") in message_ids else message
+                    for message in saved.value.get("items", [])
+                ]}
     return None
 
 

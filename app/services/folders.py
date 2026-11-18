@@ -3,12 +3,17 @@ from app.persistence.models import Operation
 from sqlalchemy import select
 
 
-async def output_folder(db, adapter, parent, name, key, task_id):
+async def output_folder(db, adapter, parent, name, key, task_id, *, retry=False):
     with db.session() as session:
         operation = session.get(Operation, key)
+        previous = [row.evidence for row in session.scalars(select(Operation).where(
+            Operation.task_id == task_id, Operation.kind == "folder_create",
+            Operation.status == "COMPLETED", Operation.key.startswith(f"output-folder:{task_id}:"),
+        )) if row.evidence.get("parent") == parent] if retry and not operation else []
     if operation:
         return await durable_folder(db, adapter, parent, operation.evidence["name"], key, task_id)
-    offset, occupied = 0, set()
+    previous_cids = {entry["cid"] for entry in previous}
+    offset, occupied, reusable = 0, set(), []
     with db.session() as session:
         occupied.update(operation.evidence.get("name", "").casefold()
                         for operation in session.scalars(select(Operation).where(
@@ -17,11 +22,24 @@ async def output_folder(db, adapter, parent, name, key, task_id):
     for _ in range(100):
         page = await adapter.files(parent, offset)
         occupied.update(file.name.casefold() for file in page.files)
+        reusable.extend(file for file in page.files if file.is_dir and file.fid in previous_cids)
         if page.next_offset is None:
             break
         offset = page.next_offset
     else:
         raise AdapterError("FOLDER_LOOKUP_BUDGET")
+    if previous_cids:
+        reusable.sort(key=lambda file: (file.name.casefold() != name.casefold(), file.name))
+        if not reusable:
+            raise AdapterError("PRIOR_OUTPUT_REQUIRES_REVIEW", uncertain=True)
+        folder = reusable[0]
+        contents = await adapter.files(folder.fid)
+        if contents.files or contents.next_offset is not None:
+            raise AdapterError("PRIOR_OUTPUT_REQUIRES_REVIEW", uncertain=True)
+        with db.session() as session:
+            session.add(Operation(key=key, task_id=task_id, kind="folder_create", status="COMPLETED",
+                                  evidence={"parent": parent, "name": folder.name, "cid": folder.fid}))
+        return folder.fid
     candidate = name
     if candidate.casefold() in occupied:
         candidate = f"{name}-{task_id[:10]}"

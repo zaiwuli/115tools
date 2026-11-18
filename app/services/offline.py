@@ -245,9 +245,7 @@ class OfflineService:
                     OfflineExecution.offline_id == current.id, OfflineExecution.generation == current.generation))
                 execution.status = current.status
                 record(session, current.id, "SUBMITTED", "offline_download", "成功发送链接，等待下载确认", "offline")
-                record(session, current.id, "DOWNLOAD_STARTED", "offline_download", "已开始下载", "offline")
                 logger.info("成功发送链接，等待下载确认。")
-                logger.info("已开始下载：%s", current.name)
         self.snapshot = None
         return time.time() + 2 if len(tasks) == 10 else None
 
@@ -290,19 +288,20 @@ class OfflineService:
                         continue
                     matches = [
                         remote for remote in statuses
-                        if (current.hash_value and current.hash_value == remote.hash_value)
-                        or current.original_link == remote.link
+                        if (current.hash_value.casefold() == remote.hash_value.casefold()
+                            if current.hash_value and remote.hash_value
+                            else current.original_link and current.original_link == remote.link)
                     ]
-                    if not matches:
-                        matches = [remote for remote in statuses
-                                   if remote.name and match_name(remote.name) == match_name(current.name)]
-                    status = matches[0].status if len(matches) == 1 else "unknown"
+                    status = matches[0].status if len(matches) == 1 else (
+                        "submission_unknown" if current.status == "submission_unknown" else "unknown"
+                    )
                     if status != current.status:
                         current.status, current.updated_at = status, now
                         current.error = "REMOTE_OFFLINE_FAILED" if status == "failed" else ""
                         record(session, current.id, status.upper(), "offline_download",
                                ("下载成功" if status == "success" else
-                                "下载失败：" + current.error if status == "failed" else
+                               "下载失败：" + current.error if status == "failed" else
+                                "已开始下载" if status == "downloading" else
                                 "下载状态：" + status), "offline")
                         if status == "success":
                             logger.info("下载成功：%s", current.name)
@@ -320,8 +319,8 @@ class OfflineService:
                         current.next_check = now + interval if status in POLLABLE and interval else None
                     if status in POLLABLE:
                         current.stage = "offline_download"
-                    if not matches:
-                        current.status, current.stage, current.next_check = "unknown", "offline_manual", None
+                    if len(matches) != 1 and current.next_check is None:
+                        current.stage = "offline_manual"
                     if status == "success":
                         current.stage = "discover"
                         seed = session.get(Settings, "seed-policy:" + current.id)

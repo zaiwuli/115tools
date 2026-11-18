@@ -128,7 +128,21 @@ def approve_automatic(session, task):
     record(session, task.id, "FALLBACK_AUTHORIZED", "cache", "按处理规则批准下载原包并本地解压")
 
 
-def cloud_retry_status(task, session=None):
+def cloud_retry_blockers(session, task_ids):
+    from app.persistence.models import Job
+    if not task_ids:
+        return set(), set()
+    job_task = Job.payload["task_id"].as_string()
+    jobs = set(session.scalars(select(job_task).where(
+        job_task.in_(task_ids), Job.state.in_(["RUNNING", "LEASED", "READY", "RECONCILING"]),
+    )))
+    operations = set(session.scalars(select(Operation.task_id).where(
+        Operation.task_id.in_(task_ids), Operation.status.in_(["PREPARED", "UNKNOWN"]),
+    )))
+    return jobs, operations
+
+
+def cloud_retry_status(task, session=None, *, blockers=None):
     from app.services.archives import is_archive
     success = task.policy.get("cloud_succeeded") or task.output.get("verification") in {"remote_manifest", "remote_reported_complete", "remote_completed_and_visible"}
     visible = bool(task.source == "115" and is_archive(task.name) and not success)
@@ -141,15 +155,10 @@ def cloud_retry_status(task, session=None):
         reason = "请先核对内容身份冲突"
     elif task.output.get("failure_archive_result") in {"PENDING", "FAILED"}:
         reason = "请先核对原包归档位置"
-    if visible and not reason and session is not None:
-        from app.persistence.models import Job
-        if session.scalar(select(Job.id).where(
-            Job.payload["task_id"].as_string() == task.id,
-            Job.state.in_(["RUNNING", "LEASED", "READY", "RECONCILING"]),
-        )):
+    if visible and not reason and (session is not None or blockers is not None):
+        jobs, operations = blockers if blockers is not None else cloud_retry_blockers(session, [task.id])
+        if task.id in jobs:
             reason = "关联处理尚未结束，请稍后重试"
-        elif session.scalar(select(Operation).where(
-            Operation.task_id == task.id, Operation.status.in_(["PREPARED", "UNKNOWN"]),
-        )):
+        elif task.id in operations:
             reason = "请先核对上一次操作结果"
     return {"cloud_retry_visible": visible, "can_retry_cloud": visible and not reason, "cloud_retry_reason": reason}

@@ -16,11 +16,12 @@ const route = useRoute()
 const router = useRouter()
 const drawer = ref(window.innerWidth >= 960)
 watch(display.mdAndUp, value => { drawer.value = value })
-let timer: ReturnType<typeof setInterval> | undefined
+let timer: ReturnType<typeof setTimeout> | undefined
 let events: EventSource | undefined
 let eventRefresh: ReturnType<typeof setTimeout> | undefined
 let retryDelay = 10000
 let refreshGeneration = 0
+let streamConnected = false
 const navigation = [
   { key: 'tasks', title: '任务中心', icon: ListTodo },
   { key: 'offline', title: '离线下载', icon: Download },
@@ -47,18 +48,34 @@ function startAutoRefresh() {
   clearTimeout(eventRefresh)
   eventRefresh = undefined
   events?.close()
+  streamConnected = false
   if (!system.autoRefresh) return
+  const schedule = () => {
+    clearTimeout(timer)
+    const delay = document.hidden ? Math.max(60000, retryDelay) : streamConnected ? 60000 : retryDelay
+    timer = setTimeout(poll, delay)
+  }
   const poll = async () => {
     if (!system.autoRefresh || generation !== refreshGeneration) return
     await system.refresh()
     retryDelay = system.connected ? 10000 : Math.min(60000, retryDelay * 2)
-    if (system.autoRefresh && generation === refreshGeneration) timer = setTimeout(poll, retryDelay)
+    if (system.autoRefresh && generation === refreshGeneration) schedule()
   }
-  timer = setTimeout(poll, retryDelay)
+  schedule()
   if (!sessionStorage.getItem('115work-token')) {
     events = new EventSource('/api/v1/events?live=true')
+    events.onopen = () => {
+      if (generation !== refreshGeneration) return
+      streamConnected = true
+      schedule()
+    }
+    events.onerror = () => {
+      if (generation !== refreshGeneration || !streamConnected) return
+      streamConnected = false
+      schedule()
+    }
     events.onmessage = () => {
-      if (eventRefresh || !system.connected) return
+      if (generation !== refreshGeneration || eventRefresh || document.hidden) return
       eventRefresh = setTimeout(() => {
         eventRefresh = undefined
         if (system.autoRefresh) void system.refresh()
@@ -66,13 +83,28 @@ function startAutoRefresh() {
     }
   }
 }
+function resumeVisibleRefresh() {
+  if (!document.hidden && system.autoRefresh) {
+    void system.refresh()
+    startAutoRefresh()
+  }
+}
 watch(() => system.autoRefresh, startAutoRefresh)
 async function control() {
   try { await system.command('/api/tasks/system', { action: system.status?.paused ? 'resume' : 'pause' }) }
   catch (error) { system.error = (error as Error).message }
 }
-onMounted(() => void connect())
-onBeforeUnmount(() => { refreshGeneration++; clearTimeout(timer); clearTimeout(eventRefresh); events?.close() })
+onMounted(() => {
+  document.addEventListener('visibilitychange', resumeVisibleRefresh)
+  void connect()
+})
+onBeforeUnmount(() => {
+  refreshGeneration++
+  clearTimeout(timer)
+  clearTimeout(eventRefresh)
+  events?.close()
+  document.removeEventListener('visibilitychange', resumeVisibleRefresh)
+})
 </script>
 
 <template>

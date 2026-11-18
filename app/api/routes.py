@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from collections import defaultdict
+from uuid import uuid4
 from sqlalchemy import delete, func, select, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import load_only
@@ -84,7 +86,8 @@ async def bark_signal(request: Request, device_key: str = "", message_path: str 
         messages = list(saved_messages.value.get("items", [])) if saved_messages else []
         from app.services.bark import match_signal
         matched = match_signal(session, fields)
-        messages.append({"received_at":now, **fields, "match":matched})
+        message_id = uuid4().hex
+        messages.append({"received_at":now, **fields, "id":message_id, "match":matched})
         session.merge(Settings(key="bark-messages",value={"items":messages[-50:]}))
         if "source_id" not in matched:
             record(session,"system","BARK_SIGNAL_IGNORED","cloud_monitor",matched["result"])
@@ -100,8 +103,18 @@ async def bark_signal(request: Request, device_key: str = "", message_path: str 
         else:
             value["count"] += 1
         signal = {k:matched[k] for k in ("source_id","relative","path","hashes")}
-        if signal not in value.setdefault("signals",[]): value["signals"].append(signal)
-        value["signals"] = value["signals"][:100]
+        signals = list(value.get("signals", []))
+        for index, existing in enumerate(signals):
+            if all(existing.get(key) == item for key, item in signal.items()):
+                signals[index] = existing | {"message_ids": (existing.get("message_ids", []) + [message_id])[-50:]}
+                break
+        else:
+            if len(signals) < 100:
+                signals.append(signal | {"message_ids": [message_id]})
+            else:
+                matched["result"] = "触发窗口目标已满，未触发检查"
+                session.merge(Settings(key="bark-messages",value={"items":messages[-50:]}))
+        value["signals"] = signals
         session.merge(Settings(key="bark-window",value=value))
         enqueue(session,"bark-window","bark_window",{},due=value["due"])
         if value["count"] == 1:
@@ -200,13 +213,13 @@ def system_status(request: Request):
         ).order_by(Task.created_at.desc()).limit(100)))
         events = list(session.scalars(select(Event).order_by(Event.id.desc()).limit(30)))
         sources = list(session.scalars(select(Source)))
-        total = session.scalar(select(func.count(Task.id)).where(Task.state == "SUCCEEDED"))
-        approvals = session.scalar(select(func.count(Task.id)).where(Task.state == "WAITING_APPROVAL"))
-        failures = session.scalar(select(func.count(Task.id)).where(Task.state == "FAILED"))
-        attention = session.scalar(select(func.count(Task.id)).where(~Task.hidden, attention_condition()))
-        active = session.scalar(select(func.count(Task.id)).where(
-            Task.state.not_in(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"]),
-        ))
+        total, approvals, failures, attention, active = session.execute(select(
+            func.count(Task.id).filter(Task.state == "SUCCEEDED"),
+            func.count(Task.id).filter(Task.state == "WAITING_APPROVAL"),
+            func.count(Task.id).filter(Task.state == "FAILED"),
+            func.count(Task.id).filter(~Task.hidden, attention_condition()),
+            func.count(Task.id).filter(Task.state.not_in(["SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"])),
+        )).one()
     settings = db.settings()
     return {
         "version": request.app.state.config.version,
@@ -250,14 +263,19 @@ def list_tasks(request: Request, state: str = "", source: str = "", q: str = "",
         if q:
             query = query.where(Task.name.contains(q, autoescape=True))
         total = session.scalar(select(func.count()).select_from(query.subquery()))
-        items = session.scalars(query.order_by(Task.created_at.desc())
-                               .offset((page - 1) * page_size).limit(page_size))
+        items = list(session.scalars(query.order_by(Task.created_at.desc(), Task.id.desc())
+                                     .offset((page - 1) * page_size).limit(page_size)))
+        task_ids = [task.id for task in items]
+        transfers = {transfer.task_id: transfer for transfer in session.scalars(
+            select(Transfer).where(Transfer.task_id.in_(task_ids)))} if task_ids else {}
+        from app.services.fallback import cloud_retry_blockers
+        blockers = cloud_retry_blockers(session, task_ids)
         from app.services.fallback import can_fallback, can_download_local
         rows = []
         for task in items:
-            transfer = session.get(Transfer, task.id)
+            transfer = transfers.get(task.id)
             rows.append(serialize(task) | {
-                **cloud_retry_status(task, session),
+                **cloud_retry_status(task, blockers=blockers),
                 "can_fallback": can_fallback(task),
                 "can_download_local": can_download_local(task),
                 "transfer": serialize(transfer) if transfer else None,
@@ -464,6 +482,10 @@ def task_command(request, task_id, action, expected_version=None):
         elif action == "retry":
             if task.state != "FAILED":
                 raise HTTPException(409, detail="ONLY_FAILED_TASK_CAN_RETRY")
+            if task.source == "115" and task.stage.startswith("cloud"):
+                status = cloud_retry_status(task, session)
+                if not status["can_retry_cloud"]:
+                    raise HTTPException(409, detail=status["cloud_retry_reason"] or "云解压重试不可用")
             if session.scalar(select(Job.id).where(
                 Job.payload["task_id"].as_string() == task.id,
                 Job.state.in_(["RUNNING", "LEASED", "READY", "RECONCILING"]),
@@ -555,23 +577,38 @@ def command(request: Request, task_id: str, body: TaskCommand):
 @secured.get("/api/115/offline")
 @secured.get("/api/v1/offline")
 def list_offline(request: Request, page: int = 1, page_size: int = 30):
+    from app.services.archives import is_archive
+    page, page_size = max(1, page), min(100, max(1, page_size))
     db = request.app.state.db
     with db.session() as session:
-        batches = session.scalars(select(Batch).where(~Batch.hidden).order_by(
-            Batch.created_at.desc()).offset(max(0, page - 1) * min(100, page_size))
-            .limit(max(1, min(100, page_size))))
+        batches = list(session.scalars(select(Batch).where(~Batch.hidden).order_by(
+            Batch.created_at.desc(), Batch.id.desc()).offset((page - 1) * page_size).limit(page_size)))
+        if not batches:
+            return {"batches": []}
+        batch_ids = [batch.id for batch in batches]
+        page_items = select(BatchItem.task_id).where(BatchItem.batch_id.in_(batch_ids))
+        items_by_batch, archives_by_item = defaultdict(list), defaultdict(list)
+        for batch_id, item in session.execute(select(BatchItem.batch_id, Offline).join(
+            Offline, Offline.id == BatchItem.task_id,
+        ).where(BatchItem.batch_id.in_(batch_ids)).order_by(BatchItem.id)):
+            items_by_batch[batch_id].append(item)
+        for offline_id, task in session.execute(select(ResourceLink.offline_id, Task).join(
+            Task, Task.id == ResourceLink.task_id,
+        ).where(ResourceLink.offline_id.in_(page_items)).order_by(ResourceLink.offline_id, ResourceLink.id)):
+            if is_archive(task.name):
+                archives_by_item[offline_id].append(task)
+        settings_by_key = {setting.key: setting for setting in session.scalars(select(Settings).where(or_(
+            Settings.key.in_(select("offline-release:" + BatchItem.task_id).where(
+                BatchItem.batch_id.in_(batch_ids))),
+            Settings.key.in_(select("seed-policy:" + BatchItem.task_id).where(
+                BatchItem.batch_id.in_(batch_ids))),
+        )))}
         result = []
         for batch in batches:
-            items = list(session.scalars(select(Offline).join(
-                BatchItem, BatchItem.task_id == Offline.id,
-            ).where(BatchItem.batch_id == batch.id)))
+            items = items_by_batch[batch.id]
             task_rows = []
             for item in items:
-                linked = list(session.scalars(select(Task).join(
-                    ResourceLink, ResourceLink.task_id == Task.id,
-                ).where(ResourceLink.offline_id == item.id)))
-                from app.services.archives import is_archive
-                archives = [task for task in linked if is_archive(task.name)]
+                archives = archives_by_item[item.id]
                 active = [task for task in archives if task.state not in {
                     "SUCCEEDED", "FAILED", "CANCELED", "SKIPPED",
                 }]
@@ -580,10 +617,10 @@ def list_offline(request: Request, page: int = 1, page_size: int = 30):
                 pipeline_stage = processing[0].stage if processing else item.stage
                 row = serialize(item)
                 row.pop("original_link")
-                release = session.get(Settings,"offline-release:"+item.id)
+                release = settings_by_key.get("offline-release:" + item.id)
                 row["release"] = release.value if release else {"attempts":0}
                 if item.stage == "handed_off": pipeline_stage = "handed_off"
-                seed = session.get(Settings, "seed-policy:" + item.id)
+                seed = settings_by_key.get("seed-policy:" + item.id)
                 if seed:
                     pipeline_stage = item.stage
                     row["seed_cleanup"] = seed.value
