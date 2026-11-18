@@ -303,6 +303,7 @@ def main():
     parser.add_argument("output")
     parser.add_argument("--max-bytes", type=int, required=True)
     parser.add_argument("--max-files", type=int, required=True)
+    parser.add_argument("--manifest-path", type=Path)
     args = parser.parse_args()
     lease = None
     try:
@@ -313,6 +314,21 @@ def main():
             lease.acquire()
         limit_worker(1024**3, 1800)
         result = extract(Path(args.source), Path(args.output), args.max_bytes, args.max_files)
+        if args.manifest_path is not None:
+            result["staging"] = args.output
+            temporary_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=args.manifest_path.parent,
+                    prefix=args.manifest_path.name + ".", suffix=".tmp", delete=False,
+                ) as stream:
+                    temporary_path = Path(stream.name)
+                    json.dump(result, stream)
+                temporary_path.replace(args.manifest_path)
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+            result = {key: result[key] for key in ("source_size", "source_mtime_ns")}
         print(json.dumps({"ok": True, "manifest": result}))
     except Exception as exc:
         code = str(exc) if isinstance(exc, ValueError) else (

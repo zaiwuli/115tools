@@ -376,6 +376,7 @@ class LocalService:
                     sys.executable, "-m", "app.adapters.extract_worker", str(path), str(attempt_staging),
                     "--max-bytes", str(max_bytes),
                     "--max-files", str(max_files),
+                    "--manifest-path", str(evidence_path),
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env,
                     **({"creationflags": 512} if os.name == "nt" else {"start_new_session": True}),
                 )
@@ -407,7 +408,6 @@ class LocalService:
                     if result["ok"]:
                         manifest = result["manifest"]
                         staging = attempt_staging
-                        evidence_path.write_text(json.dumps(manifest | {"staging": str(staging)}), encoding="utf-8")
                         break
                     if "PASSWORD" not in result["error"] or index == len(passwords) - 1:
                         raise ValueError(result["error"])
